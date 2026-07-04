@@ -57,9 +57,6 @@ linters:
         - G301 # directory permissions
         - G304 # file path from variable
         - G306 # WriteFile permissions
-    govet:
-      disable:
-        - inline
     errcheck:
       exclude-functions:
         - (io.Closer).Close

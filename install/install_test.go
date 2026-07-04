@@ -189,12 +189,15 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	}
 
 	// Trust state keys are "<CODEX_HOME>/hooks.json:<event_label>:<group>:<handler>"
-	// and land in config.toml inside the managed marker region.
+	// and land in config.toml inside the managed marker region. The source
+	// path is OS-native (filepath.Join, like Codex's own canonicalization),
+	// so build the expectation the same way and TOML-escape it.
 	trust := string(readRendered(t, fsys, "config.toml"))
-	if !strings.Contains(trust, `[hooks.state."/codex-home/hooks.json:pre_tool_use:0:0"]`) {
+	source := filepath.Join("/codex-home", "hooks.json")
+	if !strings.Contains(trust, `[hooks.state.`+tomlString(source+":pre_tool_use:0:0")+`]`) {
 		t.Errorf("trust seeding missing pre_tool_use state key:\n%s", trust)
 	}
-	if !strings.Contains(trust, `[hooks.state."/codex-home/hooks.json:stop:0:0"]`) {
+	if !strings.Contains(trust, `[hooks.state.`+tomlString(source+":stop:0:0")+`]`) {
 		t.Errorf("trust seeding missing stop state key:\n%s", trust)
 	}
 	wantHash := DefinitionHash("PreToolUse", preEntry.Matcher, pre.Command, pre.Timeout)

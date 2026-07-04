@@ -27,6 +27,7 @@ func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on windows
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(home, ".kimi-code"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))

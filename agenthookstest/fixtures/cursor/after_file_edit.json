@@ -1,0 +1,1 @@
+{"conversation_id":"conv-cursor-1","generation_id":"gen-6","hook_event_name":"afterFileEdit","workspace_roots":["/work/repo"],"file_path":"/work/repo/main.go","edits":[{"old_string":"foo","new_string":"bar"}]}

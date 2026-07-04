@@ -1,0 +1,1 @@
+{"conversation_id":"conv-cursor-1","generation_id":"gen-6","hook_event_name":"preToolUse","workspace_roots":["/work/repo"],"tool_name":"Read","tool_input":{"path":"/work/repo/main.go"}}

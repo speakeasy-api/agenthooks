@@ -1,0 +1,1 @@
+{"session_id":"sess-gem-1","cwd":"/work/repo","hook_event_name":"BeforeTool","timestamp":"2026-07-02T10:00:00Z","tool_name":"run_shell_command","tool_input":{"command":"npm run lint","description":"lint"},"tool_call_id":"gtool-1"}

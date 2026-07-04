@@ -1,0 +1,1 @@
+{"seq":4,"hook":"tool.execute.after","input":{"sessionID":"oc-sess-1","callID":"call-7","tool":"bash"},"output":{"title":"make test","output":"all tests pass","metadata":{"exit":0}}}

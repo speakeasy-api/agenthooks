@@ -1,0 +1,1 @@
+{"seq":5,"hook":"chat.message","input":{},"output":{"message":{"sessionID":"oc-sess-1","role":"user"},"parts":[{"type":"text","text":"deploy to staging"}]}}

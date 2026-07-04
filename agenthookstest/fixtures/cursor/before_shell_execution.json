@@ -1,0 +1,1 @@
+{"conversation_id":"conv-cursor-1","generation_id":"gen-5","hook_event_name":"beforeShellExecution","workspace_roots":["/work/repo","/work/lib"],"user_email":"dev@example.com","command":"git push origin main","cwd":"/work/repo"}

@@ -1,0 +1,73 @@
+version: "2"
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - containedctx
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errname
+    - errorlint
+    - exptostd
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocritic
+    - gosec
+    - govet
+    - iface
+    - importas
+    - ineffassign
+    - makezero
+    - mirror
+    - misspell
+    - musttag
+    - nilerr
+    - nilnesserr
+    - nolintlint
+    - perfsprint
+    - predeclared
+    - reassign
+    - staticcheck
+    - thelper
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+  exclusions:
+    rules:
+      - path: (.+)_test.go
+        linters:
+          - gosec
+  settings:
+    gosec:
+      excludes:
+        # The library's job is reading provider config files by variable
+        # path, spawning the consumer binary / provider CLIs, and writing
+        # config files the provider apps must be able to read.
+        - G204 # subprocess with variable
+        - G301 # directory permissions
+        - G304 # file path from variable
+        - G306 # WriteFile permissions
+    govet:
+      disable:
+        - inline
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*os.File).Close
+        - os.Remove
+        - (io/fs.File).Close
+    iface:
+      enable:
+        - opaque
+        - unexported

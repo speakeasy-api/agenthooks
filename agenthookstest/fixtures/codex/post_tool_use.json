@@ -1,0 +1,1 @@
+{"session_id":"sess-codex-1","turn_id":"turn-42","cwd":"/work/repo","hook_event_name":"PostToolUse","tool_name":"shell","tool_input":{"command":["bash","-lc","ls -la"]},"tool_use_id":"call_9","tool_response":{"exit_code":0,"stdout":"total 8\n"}}

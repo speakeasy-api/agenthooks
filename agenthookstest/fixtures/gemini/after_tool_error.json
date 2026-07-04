@@ -1,0 +1,1 @@
+{"session_id":"sess-gem-1","cwd":"/work/repo","hook_event_name":"AfterTool","timestamp":"2026-07-02T10:01:00Z","tool_name":"run_shell_command","tool_input":{"command":"npm test"},"tool_call_id":"gtool-2","tool_response":{"output":"","error":"exit status 1"}}

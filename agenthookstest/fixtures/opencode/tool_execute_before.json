@@ -1,0 +1,1 @@
+{"seq":3,"hook":"tool.execute.before","input":{"sessionID":"oc-sess-1","callID":"call-7","tool":"bash"},"output":{"args":{"command":"make test","timeout":120}}}

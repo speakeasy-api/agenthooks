@@ -1,0 +1,1 @@
+{"session_id":"sess-kimi-1","cwd":"/work/repo","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"go test ./..."},"tool_call_id":"call_03K","error":"exit status 1"}

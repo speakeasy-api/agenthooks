@@ -1,0 +1,1 @@
+{"session_id":"sess-claude-1","transcript_path":"/tmp/claude/transcript.jsonl","cwd":"/work/repo","hook_event_name":"PreToolUse","permission_mode":"default","tool_name":"mcp__github__create_issue","tool_input":{"title":"bug: flaky test","body":"details"},"tool_use_id":"toolu_02MCP"}

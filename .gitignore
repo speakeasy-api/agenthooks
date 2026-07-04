@@ -1,0 +1,6 @@
+bin/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# e2e test artifacts
+*-marker.txt

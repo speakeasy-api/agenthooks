@@ -37,8 +37,16 @@ var validProviders = map[Provider]bool{
 func parseArgs(args []string) (*invocation, error) {
 	inv := &invocation{mode: "run"}
 	rest := args
-	if len(rest) > 0 && rest[0] == "agenthooks" {
-		rest = rest[1:]
+	// Generated configs put consumer-binary flags before the sentinel
+	// ("mybinary --config=x agenthooks serve --provider=opencode"), so the
+	// sentinel and mode are located anywhere in argv, not just at the front.
+	// Everything before the sentinel belongs to the consumer and is dropped
+	// from agenthooks parsing.
+	for i, a := range rest {
+		if a == "agenthooks" {
+			rest = rest[i+1:]
+			break
+		}
 	}
 	if len(rest) > 0 {
 		switch rest[0] {

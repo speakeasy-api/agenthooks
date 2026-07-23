@@ -16,6 +16,7 @@ var codexEventLabel = map[string]string{
 	"PreCompact":        "pre_compact",
 	"PostCompact":       "post_compact",
 	"SessionStart":      "session_start",
+	"SessionEnd":        "session_end",
 	"UserPromptSubmit":  "user_prompt_submit",
 	"SubagentStart":     "subagent_start",
 	"SubagentStop":      "subagent_stop",

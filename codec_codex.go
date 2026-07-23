@@ -13,6 +13,7 @@ import (
 
 var codexKinds = map[string]EventKind{
 	"SessionStart":      KindSessionStart,
+	"SessionEnd":        KindSessionEnd,
 	"UserPromptSubmit":  KindPromptSubmitted,
 	"PreToolUse":        KindToolPre,
 	"PostToolUse":       KindToolPost,

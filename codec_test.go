@@ -80,6 +80,20 @@ func TestDecodeCodex(t *testing.T) {
 	}
 }
 
+func TestDecodeCodexSessionEnd(t *testing.T) {
+	typed, err := decodeCodex(VariantUnknown, DetectionConfig, testNow, []byte(`{"session_id":"sess-codex-1","cwd":"/work/repo","transcript_path":"/tmp/transcript.jsonl","hook_event_name":"SessionEnd","reason":"other"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, ok := typed.(*SessionEndEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *SessionEndEvent", typed)
+	}
+	if ev.Provider != ProviderCodex || ev.Kind != KindSessionEnd || ev.Session.ID != "sess-codex-1" || ev.Reason != "other" {
+		t.Errorf("codex session end decode wrong: %+v", ev)
+	}
+}
+
 func TestDecodeCursorShell(t *testing.T) {
 	typed, err := decodeCursor(VariantUnknown, DetectionConfig, testNow, fixture(t, "cursor/before_shell_execution.json"))
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 
 var kindToCodex = map[agenthooks.EventKind]string{
 	agenthooks.KindSessionStart:    "SessionStart",
+	agenthooks.KindSessionEnd:      "SessionEnd",
 	agenthooks.KindPromptSubmitted: "UserPromptSubmit",
 	agenthooks.KindToolPre:         "PreToolUse",
 	agenthooks.KindToolPost:        "PostToolUse",
@@ -54,6 +55,9 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 			command += " --async"
 		}
 		secs := timeoutSeconds(spec)
+		if event == "SessionEnd" && secs > 3 {
+			secs = 3
+		}
 		trust = append(trust, trustEntry{
 			key:  fmt.Sprintf("%s:%s:%d:0", source, codexEventLabel[event], len(hooks[event])),
 			hash: DefinitionHash(event, matcher, command, secs),

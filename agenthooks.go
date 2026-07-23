@@ -257,6 +257,11 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	base := eventOf(typed)
 	pol := r.policy(base)
+	if tool := toolOf(typed); tool != nil {
+		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind), "tool", tool.Name, "session", base.Session.ID, "turn", base.Session.TurnID)
+	} else {
+		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind))
+	}
 
 	// Attach MCP transport before the matcher filter runs: resolution can
 	// repair the Server/Tool split, which MCP globs match against.

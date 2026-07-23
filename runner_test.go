@@ -202,6 +202,37 @@ func TestCursorDedup(t *testing.T) {
 	}
 }
 
+func TestCursorDedupGenericMCPEchoDoesNotSuppressSpecific(t *testing.T) {
+	calls := 0
+	r := quietRunner(WithDedupDir(t.TempDir()))
+	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+		calls++
+		return Deny("stop"), nil
+	})
+	args := []string{"agenthooks", "run", "--provider=cursor"}
+
+	// Cursor fires the generic MCP: echo before beforeMCPExecution. The echo
+	// carries no server identity (quirk #3), so it must not claim the dedup
+	// marker away from the specific sibling.
+	generic := []byte(`{"conversation_id":"conv-mcp-1","generation_id":"gen-9","hook_event_name":"preToolUse","tool_name":"MCP:shadow_lookup","tool_input":{"marker":"x"}}`)
+	specific := []byte(`{"conversation_id":"conv-mcp-1","generation_id":"gen-9","hook_event_name":"beforeMCPExecution","tool_name":"shadow_lookup","tool_input":"{\"marker\":\"x\"}","mcp_server_name":"srv","command":"node server.mjs"}`)
+
+	if _, code := runWith(t, r, args, generic); code != 0 {
+		t.Fatalf("generic echo run failed")
+	}
+	second, _ := runWith(t, r, args, specific)
+	if !strings.Contains(second, `"permission":"deny"`) {
+		t.Errorf("specific sibling must still gate after a generic-first echo: %q", second)
+	}
+	echoAgain, _ := runWith(t, r, args, generic)
+	if echoAgain != "{}" {
+		t.Errorf("generic echo after the specific processed should no-op: %q", echoAgain)
+	}
+	if calls != 2 {
+		t.Errorf("handler calls = %d, want 2 (echo passes through, specific gates, trailing echo suppressed)", calls)
+	}
+}
+
 func TestNotifyMode(t *testing.T) {
 	r := quietRunner()
 	var msg string

@@ -131,7 +131,7 @@ var quirkRegistry = []Quirk{
 		Reference:  "provider MCP config formats"},
 	{ID: 26, Provider: ProviderClaudeCode, Versions: "all", Event: KindToolPre,
 		Behavior:   "plugin- and claude.ai-connector MCP servers appear in no on-disk config; only `claude mcp list` knows their transport, and it health-checks every server (seconds of wall time)",
-		Mitigation: "on the first MCP call the config fast path can't attribute, the runner shells out to `claude mcp list` once per session and caches the parsed inventory on disk keyed by session id (failed/empty runs too)",
+		Mitigation: "on the first MCP call the config fast path can't attribute, the runner matches against a shared on-disk `claude mcp list` inventory cache (merged additively by server name across sessions/processes; failed/empty runs negative-cached, stale misses re-probe throttled); RefreshClaudeMCPList/WarmClaudeMCPList warm it out of band so the probe leaves the interactive path",
 		Reference:  "observed claude CLI behavior"},
 	{ID: 27, Provider: ProviderGemini, Versions: "all", Event: KindToolPre,
 		Behavior:   "extension-bundled MCP servers live in per-extension gemini-extension.json manifests, not settings.json",

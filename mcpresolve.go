@@ -2,8 +2,6 @@ package agenthooks
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -77,9 +75,15 @@ func (r *Runner) resolveMCP(typed any) {
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 		if matched == nil && !r.mcpListOff {
 			// Slow path (quirk #26): plugin- and claude.ai-connector servers
-			// appear in no config file; ask `claude mcp list` once per
-			// session and match against the cached inventory.
-			matched, server, tool = matchSanitizedPrefix(r.claudeMCPListEntries(base.Session.ID), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+			// appear in no config file; match against the shared `claude mcp
+			// list` inventory. On a miss, re-probe (throttled) in case the
+			// server was installed since the last refresh, then match again.
+			matched, server, tool = matchSanitizedPrefix(r.mcpListEntries(), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+			if matched == nil {
+				if refreshed, ran := r.mcpListEntriesOnMiss(); ran {
+					matched, server, tool = matchSanitizedPrefix(refreshed, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+				}
+			}
 		}
 	case ProviderKimi:
 		// mcp__<server>__<tool> with the configured name verbatim — hyphens
@@ -549,42 +553,6 @@ func parseCodexMCPServers(data []byte) []mcpConfigEntry {
 // the ~60s provider hook budget for the handler (the runner's own deadline
 // is 55s, see defaultDeadline).
 const claudeMCPListTimeout = 15 * time.Second
-
-// claudeMCPListEntries returns the session's cached `claude mcp list`
-// inventory, invoking the CLI on first call for the session.
-func (r *Runner) claudeMCPListEntries(sessionID string) []mcpConfigEntry {
-	if sessionID == "" {
-		return nil // no key to cache under; don't risk one CLI call per event
-	}
-	dir := filepath.Join(r.stateDir(), "agenthooks-mcplist")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil
-	}
-	key := sha256.Sum256([]byte(sessionID))
-	path := filepath.Join(dir, hex.EncodeToString(key[:])[:32]+".json")
-	if data, err := os.ReadFile(path); err == nil {
-		var cached []mcpConfigEntry
-		if json.Unmarshal(data, &cached) == nil {
-			return cached
-		}
-	}
-
-	entries := runClaudeMCPList()
-
-	// Cache even a nil result: the inventory won't appear mid-session, and
-	// re-probing on every MCP event would stall each one for the timeout.
-	if data, err := json.Marshal(entries); err == nil {
-		if tmp, err := os.CreateTemp(dir, "mcplist-*"); err == nil {
-			_, werr := tmp.Write(data)
-			if cerr := tmp.Close(); werr == nil && cerr == nil {
-				_ = os.Rename(tmp.Name(), path)
-			} else {
-				_ = os.Remove(tmp.Name())
-			}
-		}
-	}
-	return entries
-}
 
 func runClaudeMCPList() []mcpConfigEntry {
 	bin, err := exec.LookPath("claude")

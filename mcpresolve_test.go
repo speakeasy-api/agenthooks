@@ -2,12 +2,14 @@ package agenthooks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, path, content string) {
@@ -530,7 +532,7 @@ func TestResolveMCPClaudeListFallback(t *testing.T) {
 	}
 }
 
-func TestResolveMCPClaudeListOncePerSession(t *testing.T) {
+func TestResolveMCPClaudeListSharedGlobally(t *testing.T) {
 	isolateHome(t)
 	count := fakeClaudeCLI(t, "Checking MCP server health...\n") // empty inventory
 	stateDir := t.TempDir()
@@ -551,20 +553,102 @@ func TestResolveMCPClaudeListOncePerSession(t *testing.T) {
 		t.Errorf("cache must be shared across processes, ran %d times", got)
 	}
 
-	// A different session re-probes.
+	// A different session shares the same global cache: no re-probe. This is
+	// the point of the shared cache — one session's warm probe serves them all.
 	other := mcpToolPre(ProviderClaudeCode, "", "mcp__ghost__x")
 	other.Session.ID = "sess-other"
 	r.resolveMCP(other)
-	if got := cliRuns(t, count); got != 2 {
-		t.Errorf("new session must probe again, ran %d times", got)
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("a new session must reuse the shared cache, ran %d times", got)
 	}
 
-	// No session id: never probe (nothing to key the cache on).
+	// An event with no session id resolves against the same shared cache and,
+	// because it is already warm, still does not re-probe.
 	anon := mcpToolPre(ProviderClaudeCode, "", "mcp__ghost__x")
 	anon.Session.ID = ""
 	r.resolveMCP(anon)
-	if got := cliRuns(t, count); got != 2 {
-		t.Errorf("empty session id must not probe, ran %d times", got)
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("a warm shared cache must serve session-less events too, ran %d times", got)
+	}
+}
+
+func TestRefreshClaudeMCPListAdditiveMerge(t *testing.T) {
+	isolateHome(t)
+	r := mcpTestRunner(t)
+
+	fakeClaudeCLI(t, "alpha: https://a.example.com/mcp - ✓ Connected")
+	r.RefreshClaudeMCPList()
+
+	// A later probe that reports only beta (alpha momentarily absent) must not
+	// evict alpha: the merge is additive by server name.
+	fakeClaudeCLI(t, "beta: https://b.example.com/mcp - ✓ Connected")
+	merged := r.RefreshClaudeMCPList()
+
+	names := map[string]string{}
+	for _, e := range merged {
+		names[e.Name] = e.URL
+	}
+	if names["alpha"] != "https://a.example.com/mcp" {
+		t.Errorf("additive merge dropped alpha: %+v", merged)
+	}
+	if names["beta"] != "https://b.example.com/mcp" {
+		t.Errorf("additive merge missing beta: %+v", merged)
+	}
+}
+
+func TestResolveMCPClaudeListRefreshesOnStaleMiss(t *testing.T) {
+	isolateHome(t)
+	r := mcpTestRunner(t)
+
+	// Seed a stale, empty cache: RefreshedAt well past the throttle window so a
+	// miss is allowed to re-probe.
+	if err := os.MkdirAll(r.mcpListDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := mcpListCache{RefreshedAt: time.Now().Add(-time.Hour).Unix(), Entries: map[string]mcpConfigEntry{}}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.mcpListPath(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The server now exists; a miss against the stale cache must re-probe and
+	// resolve it.
+	count := fakeClaudeCLI(t, "late: https://late.example.com/mcp - ✓ Connected")
+	ev := mcpToolPre(ProviderClaudeCode, "", "mcp__late__do")
+	r.resolveMCP(ev)
+
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://late.example.com/mcp" {
+		t.Errorf("stale miss must re-probe and resolve: %+v", ev.Tool.MCP)
+	}
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("stale miss must probe exactly once, ran %d times", got)
+	}
+}
+
+func TestWarmClaudeMCPListPopulatesDefaultCache(t *testing.T) {
+	isolateHome(t)
+	// WarmClaudeMCPList writes the default (os.TempDir) cache an unconfigured
+	// Runner reads; point TempDir at an isolated dir so the test is hermetic.
+	t.Setenv("TMPDIR", t.TempDir())
+	count := fakeClaudeCLI(t, "gamma: https://g.example.com/mcp - ✓ Connected")
+
+	entries := WarmClaudeMCPList()
+	if len(entries) != 1 || entries[0].Name != "gamma" || entries[0].URL != "https://g.example.com/mcp" {
+		t.Fatalf("warm must return the parsed inventory: %+v", entries)
+	}
+
+	// A default runner (no WithDedupDir) resolves against the warmed cache
+	// without probing the CLI again.
+	ev := mcpToolPre(ProviderClaudeCode, "", "mcp__gamma__do")
+	quietRunner().resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://g.example.com/mcp" {
+		t.Errorf("default runner must resolve from the warmed default cache: %+v", ev.Tool.MCP)
+	}
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("resolving from the warmed cache must not re-probe, ran %d times", got)
 	}
 }
 

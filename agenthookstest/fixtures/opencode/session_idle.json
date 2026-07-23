@@ -1,1 +1,1 @@
-{"seq":9,"hook":"session.idle","input":{"sessionID":"oc-sess-1"}}
+{"seq":9,"hook":"session.idle","input":{"sessionID":"oc-sess-1","finalMessage":"Deployed to staging."}}

@@ -35,6 +35,7 @@ export const AgentHooks = async (ctx: any) => {
   })
   let seq = 0
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>()
+  const failedCalls = new Set<string>()
 
   createInterface({ input: child.stdout! }).on("line", (line) => {
     if (!line.trim()) return
@@ -91,8 +92,37 @@ export const AgentHooks = async (ctx: any) => {
     "chat.params": forward("chat.params"),
     "tool.execute.before": forward("tool.execute.before"),
     "tool.execute.after": forward("tool.execute.after"),
-    event: async ({ event }: any) =>
-      apply(null, await call(event?.type ?? "event", event?.properties ?? {}, null)),
+    event: async ({ event }: any) => {
+      let input = event?.properties ?? {}
+      if (event?.type === "message.part.updated") {
+        const part = input?.part
+        // Only failed tool parts are reported: tool.execute.after does not
+        // fire when a tool errors, and streaming deltas would flood the pipe.
+        if (part?.type !== "tool" || part?.state?.status !== "error") return
+        if (failedCalls.has(part.callID)) return
+        failedCalls.add(part.callID)
+      }
+      // No native hook or bus event carries the completed assistant text, so
+      // splice the transcript's final assistant message into the stop event
+      // the way Claude/Codex report last_assistant_message.
+      if (event?.type === "session.idle" && input?.sessionID) {
+        try {
+          const res: any = await ctx.client.session.messages({ path: { id: input.sessionID } })
+          const msgs: any[] = res?.data ?? []
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i]
+            if (m?.info?.role !== "assistant") continue
+            const text = (m.parts ?? [])
+              .filter((p: any) => p?.type === "text" && p.text && !p.synthetic)
+              .map((p: any) => p.text)
+              .join("\n")
+            if (text) input = { ...input, finalMessage: text }
+            break
+          }
+        } catch {}
+      }
+      apply(null, await call(event?.type ?? "event", input, null))
+    },
     dispose: () => {
       try {
         child.stdin!.end()

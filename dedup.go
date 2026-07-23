@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -13,9 +14,10 @@ import (
 // (beforeShellExecution/beforeMCPExecution/...) hook for one tool call
 // (quirk #2). Each firing is a separate process, so suppression uses
 // best-effort on-disk markers: the first arrival wins, the sibling gets the
-// provider's no-op form (never a forced allow). Any filesystem error means
-// "not a duplicate" — correctness degrades to double-delivery, never to a
-// dropped decision.
+// provider's no-op form (never a forced allow) — except the generic MCP echo,
+// which never claims the marker (see genericMCPEcho). Any filesystem error
+// means "not a duplicate" — correctness degrades to double-delivery, never to
+// a dropped decision.
 
 const dedupTTL = 30 * time.Second
 
@@ -34,6 +36,19 @@ func (r *Runner) seenDuplicate(typed any) bool {
 	}
 	cleanupStale(dir)
 	path := filepath.Join(dir, key)
+	// The generic MCP echo (MCP:-prefixed preToolUse/postToolUse) carries no
+	// server identity (quirk #3), so it can never be the authoritative sibling.
+	// It must not claim the marker: Cursor fires the generic form before the
+	// specific one, and a generic claim would suppress the only sibling that
+	// can be attributed to an MCP server. It is still suppressed itself once
+	// the specific sibling has processed.
+	if genericMCPEcho(base, tool) {
+		if fi, statErr := os.Stat(path); statErr == nil && time.Since(fi.ModTime()) < dedupTTL {
+			return true
+		}
+		r.logger.Debug("agenthooks: dedup pass-through (generic MCP echo)", "native", base.NativeName, "key", key)
+		return false
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -46,6 +61,17 @@ func (r *Runner) seenDuplicate(typed any) bool {
 		return false
 	}
 	_ = f.Close()
+	r.logger.Debug("agenthooks: dedup marker claimed", "native", base.NativeName, "key", key)
+	return false
+}
+
+// genericMCPEcho reports whether the event is Cursor's generic
+// preToolUse/postToolUse/postToolUseFailure echo of an MCP call.
+func genericMCPEcho(base *Event, tool *ToolCall) bool {
+	switch base.NativeName {
+	case "preToolUse", "postToolUse", "postToolUseFailure":
+		return strings.HasPrefix(tool.Name, "MCP:")
+	}
 	return false
 }
 

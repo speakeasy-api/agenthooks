@@ -168,7 +168,9 @@ func TestRenderGeminiMilliseconds(t *testing.T) {
 }
 
 func TestRenderCodexAsyncAndTrust(t *testing.T) {
-	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: "/codex-home"})
+	m := testManifest()
+	m.Hooks = append(m.Hooks, HookSpec{Kind: agenthooks.KindSessionEnd, Blocking: false, Timeout: 60 * time.Second})
+	fsys, err := Render(m, Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: "/codex-home"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +189,11 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	if strings.Contains(pre.Command, "--async") {
 		t.Errorf("blocking codex hook must stay synchronous: %s", pre.Command)
 	}
+	sessionEndEntry := cfg.Hooks["SessionEnd"][0]
+	sessionEnd := sessionEndEntry.Hooks[0]
+	if sessionEnd.Timeout != 3 || !strings.HasSuffix(sessionEnd.Command, " --async") {
+		t.Errorf("SessionEnd must detach within Codex's 3-second teardown budget: %+v", sessionEnd)
+	}
 
 	// Trust state keys are "<CODEX_HOME>/hooks.json:<event_label>:<group>:<handler>"
 	// and land in config.toml inside the managed marker region. The source
@@ -200,9 +207,16 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	if !strings.Contains(trust, `[hooks.state.`+tomlString(source+":stop:0:0")+`]`) {
 		t.Errorf("trust seeding missing stop state key:\n%s", trust)
 	}
+	if !strings.Contains(trust, `[hooks.state.`+tomlString(source+":session_end:0:0")+`]`) {
+		t.Errorf("trust seeding missing session_end state key:\n%s", trust)
+	}
 	wantHash := DefinitionHash("PreToolUse", preEntry.Matcher, pre.Command, pre.Timeout)
 	if !strings.Contains(trust, `trusted_hash = "`+wantHash+`"`) {
 		t.Errorf("trust file must contain the definition hash %s:\n%s", wantHash, trust)
+	}
+	wantSessionEndHash := DefinitionHash("SessionEnd", sessionEndEntry.Matcher, sessionEnd.Command, sessionEnd.Timeout)
+	if !strings.Contains(trust, `trusted_hash = "`+wantSessionEndHash+`"`) {
+		t.Errorf("trust file must contain the SessionEnd definition hash %s:\n%s", wantSessionEndHash, trust)
 	}
 	if !strings.Contains(trust, "BEGIN agenthooks managed hooks") || !strings.Contains(trust, "END agenthooks managed hooks") {
 		t.Errorf("codex config.toml must use the managed marker region:\n%s", trust)

@@ -81,6 +81,16 @@ type SessionStartInput struct {
 	Extra         map[string]json.RawMessage `json:"-"`
 }
 
+// SessionEndInput is the native SessionEnd payload.
+type SessionEndInput struct {
+	SessionID      string                     `json:"session_id"`
+	TranscriptPath *string                    `json:"transcript_path"`
+	CWD            string                     `json:"cwd"`
+	HookEventName  string                     `json:"hook_event_name"`
+	Reason         string                     `json:"reason"`
+	Extra          map[string]json.RawMessage `json:"-"`
+}
+
 // CompactInput is the native PreCompact / PostCompact payload.
 type CompactInput struct {
 	SessionID     string                     `json:"session_id"`
@@ -137,6 +147,10 @@ func SubagentStop(e *agenthooks.Event) (*StopInput, bool) {
 
 func SessionStart(e *agenthooks.Event) (*SessionStartInput, bool) {
 	return view[SessionStartInput](e, "SessionStart")
+}
+
+func SessionEnd(e *agenthooks.Event) (*SessionEndInput, bool) {
+	return view[SessionEndInput](e, "SessionEnd")
 }
 
 func PreCompact(e *agenthooks.Event) (*CompactInput, bool) {

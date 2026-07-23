@@ -185,8 +185,27 @@ func TestDecodeOpenCodeFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := typed.(*StopEvent); !ok {
+	stop, ok := typed.(*StopEvent)
+	if !ok {
 		t.Fatalf("session.idle should map to agent.stop, got %T", typed)
+	}
+	if stop.FinalMessage != "Deployed to staging." {
+		t.Errorf("shim-spliced finalMessage wrong: %q", stop.FinalMessage)
+	}
+
+	typed, err = decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/message_part_updated_tool_error.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, ok := typed.(*ToolPostEvent)
+	if !ok {
+		t.Fatalf("tool-error part update should map to a failed tool.post, got %T", typed)
+	}
+	if !failed.Failed || failed.Error != "File not found: /tmp/missing.txt" {
+		t.Errorf("part error must surface as failure: %+v", failed)
+	}
+	if failed.Session.ID != "oc-sess-1" || failed.Tool.Name != "read" || failed.Tool.ID != "call-9" {
+		t.Errorf("opencode tool-error identity wrong: %+v", failed.Tool)
 	}
 }
 

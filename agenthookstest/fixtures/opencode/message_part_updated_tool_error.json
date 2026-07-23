@@ -1,0 +1,1 @@
+{"seq":10,"hook":"message.part.updated","input":{"part":{"id":"prt-1","sessionID":"oc-sess-1","messageID":"msg-1","type":"tool","callID":"call-9","tool":"read","state":{"status":"error","input":{"filePath":"/tmp/missing.txt"},"error":"File not found: /tmp/missing.txt","time":{"start":1,"end":2}}}},"output":null}

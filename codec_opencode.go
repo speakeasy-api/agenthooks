@@ -74,6 +74,11 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 	if fr.Hook == "" {
 		return nil, errors.New("agenthooks: opencode frame missing hook name")
 	}
+	if fr.Hook == "message.part.updated" {
+		if ev := decodeOpenCodeToolError(v, conf, now, fr, raw); ev != nil {
+			return ev, nil
+		}
+	}
 	var in struct {
 		SessionID string `json:"sessionID"`
 		CallID    string `json:"callID"`
@@ -84,6 +89,10 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 		Title     string `json:"title"`
 		Message   string `json:"message"`
 		ParentID  string `json:"parentID"`
+		// FinalMessage is spliced into the session.idle input by the shim,
+		// which reads the transcript over the OpenCode SDK: no native hook or
+		// bus event carries the completed assistant text.
+		FinalMessage string `json:"finalMessage"`
 	}
 	_ = json.Unmarshal(fr.Input, &in) // input shape varies per hook; best-effort probe
 	if in.SessionID == "" {
@@ -147,7 +156,7 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 	case KindPromptSubmitted:
 		return &PromptEvent{Event: base, Prompt: opencodePromptText(fr.Output)}, nil
 	case KindStop, KindSubagentStop:
-		return &StopEvent{Event: base}, nil
+		return &StopEvent{Event: base, FinalMessage: in.FinalMessage}, nil
 	case KindSubagentStart:
 		return &SubagentStartEvent{Event: base}, nil
 	case KindPermission:
@@ -167,6 +176,49 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 	}
 	ev := base
 	return &ev, nil
+}
+
+// decodeOpenCodeToolError lifts a failed tool call out of a
+// message.part.updated bus frame: tool.execute.after does not fire when a
+// tool errors, so the part's error state is the only failure signal. Frames
+// carrying any other part shape decode to nil.
+func decodeOpenCodeToolError(v Variant, conf DetectionConfidence, now time.Time, fr *opencodeFrame, raw []byte) *ToolPostEvent {
+	var in struct {
+		Part struct {
+			Type      string `json:"type"`
+			SessionID string `json:"sessionID"`
+			CallID    string `json:"callID"`
+			Tool      string `json:"tool"`
+			State     struct {
+				Status string          `json:"status"`
+				Error  string          `json:"error"`
+				Input  json.RawMessage `json:"input"`
+			} `json:"state"`
+		} `json:"part"`
+	}
+	if err := json.Unmarshal(fr.Input, &in); err != nil {
+		return nil
+	}
+	if in.Part.Type != "tool" || in.Part.State.Status != "error" {
+		return nil
+	}
+	base := Event{
+		Provider:            ProviderOpenCode,
+		Variant:             v,
+		NativeName:          fr.Hook,
+		Kind:                KindToolError,
+		Time:                now,
+		DetectionConfidence: conf,
+		Session:             SessionInfo{ID: in.Part.SessionID},
+		Raw:                 json.RawMessage(raw),
+	}
+	return &ToolPostEvent{
+		Event:  base,
+		Tool:   makeToolCall(base.Session, in.Part.Tool, in.Part.CallID, in.Part.State.Input, nil),
+		Output: nil,
+		Failed: true,
+		Error:  in.Part.State.Error,
+	}
 }
 
 // opencodePromptText joins the text parts of a chat.message output.

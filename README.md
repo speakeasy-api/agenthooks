@@ -144,8 +144,16 @@ Codex trust-hash pre-seeding.
   extension manifests, `~/.kimi/mcp.json`). On Claude Code, servers absent
   from config files
   (plugins, claude.ai connectors) are attributed via `claude mcp list`, run
-  at most once per session and cached on disk. Config-resolved transport is
-  flagged `FromConfig` and is best-effort — ambiguous matches stay empty.
+  in the launching process's project and configuration context. On Claude Code
+  2.1.214+, launch-only `--mcp-config`, `--strict-mcp-config`, `--settings`,
+  `--setting-sources`, `--plugin-dir`, `--bare`, and
+  `--safe-mode` semantics are recovered through `CLAUDE_PID`; older versions
+  fall back to the ordinary on-disk context. Inventories are cached briefly by
+  a secret-safe context digest and replaced on refresh so removals propagate.
+  Remote `--plugin-url` servers stay unattributed rather than being refetched
+  with potentially different code during hook dispatch.
+  Config-resolved transport is flagged `FromConfig` and is best-effort —
+  ambiguous or unrecoverable matches stay empty.
   Disable with `WithoutMCPResolution()` (everything) or
   `WithoutMCPListFallback()` (just the CLI probe).
 - The quirk registry (`agenthooks.Quirks()`) is the machine-readable list of

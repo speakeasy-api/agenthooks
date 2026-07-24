@@ -86,15 +86,15 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithDedupDir relocates the on-disk cross-process state: the dedup markers
-// used for Cursor's duplicate tool events (quirk #2), the per-session
+// used for Cursor's duplicate tool events (quirk #2), the launch-context
 // `claude mcp list` cache (quirk #26), and the prompt-backfill markers
 // (quirks #30, #31). Default: os.TempDir().
 func WithDedupDir(dir string) Option {
 	return func(r *Runner) { r.dedupDir = dir }
 }
 
-// stateDir roots the best-effort cross-process state files (dedup markers,
-// per-session MCP inventory cache).
+// stateDir roots the best-effort cross-process state files (dedup markers and
+// short-lived MCP inventory snapshots).
 func (r *Runner) stateDir() string {
 	if r.dedupDir != "" {
 		return r.dedupDir
@@ -114,10 +114,10 @@ func WithoutMCPResolution() Option {
 	return func(r *Runner) { r.mcpResolveOff = true }
 }
 
-// WithoutMCPListFallback disables only the once-per-session `claude mcp list`
-// probe used to attribute MCP servers that appear in no config file (plugin
-// and claude.ai connectors, quirk #26). Config-file resolution (quirk #25)
-// stays active.
+// WithoutMCPListFallback disables `claude mcp list` probes used to attribute
+// MCP servers that appear in no directly-readable config file (plugin and
+// claude.ai connectors, quirk #26). Direct config-file resolution, including
+// launch-only --mcp-config values, stays active.
 func WithoutMCPListFallback() Option {
 	return func(r *Runner) { r.mcpListOff = true }
 }

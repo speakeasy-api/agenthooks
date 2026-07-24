@@ -1,14 +1,61 @@
 package agenthooks
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+const testHelperEnv = "AGENTHOOKS_TEST_HELPER"
+
+func TestMain(m *testing.M) {
+	switch os.Getenv(testHelperEnv) {
+	case "fake-claude":
+		fakeClaudeMain()
+		os.Exit(0)
+	case "claude-launch":
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func fakeClaudeMain() {
+	if path := os.Getenv("AGENTHOOKS_FAKE_CLAUDE_COUNT"); path != "" {
+		f, _ := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if f != nil {
+			_, _ = f.WriteString("x\n")
+			_ = f.Close()
+		}
+	}
+	if path := os.Getenv("AGENTHOOKS_FAKE_CLAUDE_CALLS"); path != "" {
+		cwd, _ := os.Getwd()
+		data, _ := json.Marshal(fakeClaudeCall{Args: os.Args[1:], Dir: cwd})
+		f, _ := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if f != nil {
+			_, _ = f.Write(append(data, '\n'))
+			_ = f.Close()
+		}
+	}
+	if data, err := os.ReadFile(os.Getenv("AGENTHOOKS_FAKE_CLAUDE_OUTPUT")); err == nil {
+		_, _ = os.Stdout.Write(data)
+	}
+	if data, err := os.ReadFile(os.Getenv("AGENTHOOKS_FAKE_CLAUDE_EXIT_FILE")); err == nil {
+		if code, _ := strconv.Atoi(strings.TrimSpace(string(data))); code != 0 {
+			os.Exit(code)
+		}
+	}
+}
 
 func writeConfig(t *testing.T, path, content string) {
 	t.Helper()
@@ -35,31 +82,67 @@ func isolateHome(t *testing.T) string {
 	return home
 }
 
-// mcpTestRunner isolates the on-disk state dir so per-session mcp-list
+// mcpTestRunner isolates the on-disk state dir so launch-context mcp-list
 // caches can't leak across tests or into the real temp dir.
 func mcpTestRunner(t *testing.T, opts ...Option) *Runner {
 	t.Helper()
 	return quietRunner(append([]Option{WithDedupDir(t.TempDir())}, opts...)...)
 }
 
-// fakeClaudeCLI installs a `claude` shim on PATH that appends to a counter
-// file and prints the given `claude mcp list` output.
-func fakeClaudeCLI(t *testing.T, output string) (countFile string) {
+type fakeClaude struct {
+	countFile  string
+	outputFile string
+	callsFile  string
+	exitFile   string
+}
+
+type fakeClaudeCall struct {
+	Args []string `json:"args"`
+	Dir  string   `json:"dir"`
+}
+
+// installFakeClaude copies the current test binary onto PATH as `claude`.
+// TestMain turns that copy into a cross-platform deterministic CLI harness.
+func installFakeClaude(t *testing.T, output string) fakeClaude {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake claude CLI shim requires a POSIX shell")
-	}
 	binDir := t.TempDir()
-	countFile = filepath.Join(binDir, "count")
-	// The test PATH holds only the shim, so restore a real one for `cat`.
-	script := "#!/bin/sh\nPATH=/bin:/usr/bin\necho x >> " + countFile +
-		"\ncat <<'EOF'\n" + strings.TrimRight(output, "\n") + "\nEOF\n"
-	writeConfig(t, filepath.Join(binDir, "claude"), script)
-	if err := os.Chmod(filepath.Join(binDir, "claude"), 0o755); err != nil {
+	name := "claude"
+	if strings.EqualFold(filepath.Ext(os.Args[0]), ".exe") {
+		name += ".exe"
+	}
+	src, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
+	dst := filepath.Join(binDir, name)
+	if err := os.Link(src, dst); err != nil {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := fakeClaude{
+		countFile:  filepath.Join(binDir, "count"),
+		outputFile: filepath.Join(binDir, "output"),
+		callsFile:  filepath.Join(binDir, "calls"),
+		exitFile:   filepath.Join(binDir, "exit"),
+	}
+	writeConfig(t, h.outputFile, output)
 	t.Setenv("PATH", binDir)
-	return countFile
+	t.Setenv(testHelperEnv, "fake-claude")
+	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_COUNT", h.countFile)
+	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_OUTPUT", h.outputFile)
+	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_CALLS", h.callsFile)
+	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_EXIT_FILE", h.exitFile)
+	return h
+}
+
+func fakeClaudeCLI(t *testing.T, output string) string {
+	t.Helper()
+	return installFakeClaude(t, output).countFile
 }
 
 func cliRuns(t *testing.T, countFile string) int {
@@ -69,6 +152,65 @@ func cliRuns(t *testing.T, countFile string) int {
 		return 0
 	}
 	return strings.Count(string(data), "x")
+}
+
+func (h fakeClaude) calls(t *testing.T) []fakeClaudeCall {
+	t.Helper()
+	f, err := os.Open(h.callsFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var calls []fakeClaudeCall
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		var call fakeClaudeCall
+		if err := json.Unmarshal(s.Bytes(), &call); err != nil {
+			t.Fatal(err)
+		}
+		calls = append(calls, call)
+	}
+	if err := s.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return calls
+}
+
+func startClaudeLaunch(t *testing.T, projectDir string, args ...string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Env = append(withoutEnv(os.Environ(), testHelperEnv), testHelperEnv+"=claude-launch")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Wait()
+	})
+	t.Setenv("CLAUDE_PID", strconv.Itoa(cmd.Process.Pid))
+	t.Setenv("CLAUDE_PROJECT_DIR", projectDir)
+}
+
+func withoutEnv(env []string, name string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func mcpToolPre(p Provider, cwd, name string) *ToolPreEvent {
@@ -517,9 +659,9 @@ func TestResolveMCPClaudeListFallback(t *testing.T) {
 		t.Errorf("plugin server not resolved via CLI fallback: %+v", ev.Tool.MCP)
 	}
 
-	// Same session: the second resolve must hit the cache, not the CLI.
+	// Same launch context: the second resolve must hit the cache, not the CLI.
 	if got := cliRuns(t, count); got != 1 {
-		t.Errorf("CLI must run once per session, ran %d times", got)
+		t.Errorf("CLI must run once per launch context, ran %d times", got)
 	}
 
 	// Unknown server: cached inventory consulted, still no re-run.
@@ -530,7 +672,7 @@ func TestResolveMCPClaudeListFallback(t *testing.T) {
 	}
 }
 
-func TestResolveMCPClaudeListOncePerSession(t *testing.T) {
+func TestResolveMCPClaudeListSharedByContext(t *testing.T) {
 	isolateHome(t)
 	count := fakeClaudeCLI(t, "Checking MCP server health...\n") // empty inventory
 	stateDir := t.TempDir()
@@ -551,20 +693,392 @@ func TestResolveMCPClaudeListOncePerSession(t *testing.T) {
 		t.Errorf("cache must be shared across processes, ran %d times", got)
 	}
 
-	// A different session re-probes.
+	// A different session with the same launch context shares the snapshot.
 	other := mcpToolPre(ProviderClaudeCode, "", "mcp__ghost__x")
 	other.Session.ID = "sess-other"
 	r.resolveMCP(other)
-	if got := cliRuns(t, count); got != 2 {
-		t.Errorf("new session must probe again, ran %d times", got)
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("same launch context must share the cache, ran %d times", got)
 	}
 
-	// No session id: never probe (nothing to key the cache on).
+	// Cache identity is launch context rather than session id.
 	anon := mcpToolPre(ProviderClaudeCode, "", "mcp__ghost__x")
 	anon.Session.ID = ""
 	r.resolveMCP(anon)
-	if got := cliRuns(t, count); got != 2 {
-		t.Errorf("empty session id must not probe, ran %d times", got)
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("session-less events must share the context cache, ran %d times", got)
+	}
+}
+
+func TestParseClaudeLaunchArgs(t *testing.T) {
+	c := parseClaudeLaunchArgs([]string{
+		"claude", "--model", "haiku", "prompt",
+		"--settings=extra.json", "--setting-sources", "user,project",
+		"--plugin-dir", "./one", "--plugin-dir=./two", "--plugin-url", "https://example.com/plugin.zip",
+		"--strict-mcp-config", "--mcp-config", "one.json", `{"mcpServers":{"inline":{"url":"https://inline.example.com"}}}`,
+	}, "/work")
+	if !c.StrictMCP || c.Bare || c.SafeMode {
+		t.Fatalf("boolean flags parsed incorrectly: %+v", c)
+	}
+	if len(c.MCPConfigs) != 2 || len(c.PluginDirs) != 2 {
+		t.Fatalf("variadic/repeated flags parsed incorrectly: %+v", c)
+	}
+	wantReplay := []string{
+		"--settings", "extra.json", "--setting-sources", "user,project",
+		"--plugin-dir", "./one", "--plugin-dir", "./two",
+	}
+	if strings.Join(c.ReplayArgs, "\x00") != strings.Join(wantReplay, "\x00") {
+		t.Fatalf("replay args = %#v, want %#v", c.ReplayArgs, wantReplay)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessDefaultContext(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	fake := installFakeClaude(t, "fallback: https://fallback.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "--model", "haiku", "-p", "prompt")
+
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__fallback__run")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://fallback.example.com/mcp" {
+		t.Fatalf("default inventory not resolved: %+v", ev.Tool.MCP)
+	}
+	calls := fake.calls(t)
+	if len(calls) != 1 || strings.Join(calls[0].Args, " ") != "mcp list" || calls[0].Dir != project {
+		t.Fatalf("contextual CLI call = %+v", calls)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessStrictConfig(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(project, ".mcp.json"),
+		`{"mcpServers":{"shared":{"url":"https://disk.example.com/mcp"}}}`)
+	writeConfig(t, filepath.Join(project, "launch.json"),
+		`{"mcpServers":{"shared":{"type":"http","url":"https://explicit.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "shared: https://wrong.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--strict-mcp-config", "--mcp-config", "launch.json")
+
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__shared__run")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://explicit.example.com/mcp" {
+		t.Fatalf("strict config did not override disk config: %+v", ev.Tool.MCP)
+	}
+	if got := cliRuns(t, fake.countFile); got != 0 {
+		t.Fatalf("strict config must not invoke mcp list, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessInlineConfigsUseLastDefinition(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("MCP_ORIGIN", "https://inline.example.com")
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(project, "first.json"),
+		`{"mcpServers":{"shared":{"type":"http","url":"https://first.example.com/mcp"}}}`)
+	inline := `{"mcpServers":{
+		"shared":{"type":"http","url":"${MCP_ORIGIN}/mcp"},
+		"invalid":{"url":"https://invalid.example.com/mcp"}
+	}}`
+	fake := installFakeClaude(t, "shared: https://wrong.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--strict-mcp-config", "--mcp-config", "first.json", inline)
+
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__shared__run")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://inline.example.com/mcp" {
+		t.Fatalf("last inline config did not win: %+v", ev.Tool.MCP)
+	}
+	invalid := mcpToolPre(ProviderClaudeCode, project, "mcp__invalid__run")
+	mcpTestRunner(t).resolveMCP(invalid)
+	if invalid.Tool.MCP.URL != "" {
+		t.Fatalf("Claude-invalid URL config must stay unresolved: %+v", invalid.Tool.MCP)
+	}
+	if got := cliRuns(t, fake.countFile); got != 0 {
+		t.Fatalf("strict inline config must not invoke mcp list, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessConfigMergedWithInventory(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(project, "launch.json"),
+		`{"mcpServers":{"explicit":{"type":"http","url":"https://explicit.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "configured: https://configured.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--mcp-config", "launch.json")
+	r := mcpTestRunner(t)
+
+	explicit := mcpToolPre(ProviderClaudeCode, project, "mcp__explicit__run")
+	r.resolveMCP(explicit)
+	configured := mcpToolPre(ProviderClaudeCode, project, "mcp__configured__run")
+	r.resolveMCP(configured)
+	if explicit.Tool.MCP.URL != "https://explicit.example.com/mcp" || configured.Tool.MCP.URL != "https://configured.example.com/mcp" {
+		t.Fatalf("merged launch inventory wrong: explicit=%+v configured=%+v", explicit.Tool.MCP, configured.Tool.MCP)
+	}
+	if got := cliRuns(t, fake.countFile); got != 1 {
+		t.Fatalf("normal inventory should be probed once, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessReplaysContextFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "settings", args: []string{"--settings", "extra.json"}, want: []string{"--settings", "extra.json", "mcp", "list"}},
+		{name: "setting sources", args: []string{"--setting-sources", "user"}, want: []string{"--setting-sources", "user", "mcp", "list"}},
+		{name: "plugin directory", args: []string{"--plugin-dir", "./plugin"}, want: []string{"--plugin-dir", "./plugin", "mcp", "list"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHome(t)
+			project := t.TempDir()
+			fake := installFakeClaude(t, "launch-only: https://launch.example.com/mcp - connected\n")
+			startClaudeLaunch(t, project, append([]string{"-p", "prompt"}, tc.args...)...)
+			ev := mcpToolPre(ProviderClaudeCode, project, "mcp__launch-only__run")
+			mcpTestRunner(t).resolveMCP(ev)
+			if ev.Tool.MCP.URL != "https://launch.example.com/mcp" {
+				t.Fatalf("replayed inventory not resolved: %+v", ev.Tool.MCP)
+			}
+			calls := fake.calls(t)
+			if len(calls) != 1 || strings.Join(calls[0].Args, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("replayed args = %+v, want %#v", calls, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeMCPLaunchHarnessBareMode(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	pluginDir := filepath.Join(project, "launch-plugin")
+	if err := os.Mkdir(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, filepath.Join(project, "launch.json"),
+		`{"mcpServers":{"explicit":{"type":"http","url":"https://explicit.example.com/mcp"}}}`)
+	writeConfig(t, filepath.Join(project, ".mcp.json"),
+		`{"mcpServers":{"excluded":{"url":"https://disk.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, strings.Join([]string{
+		"excluded: https://disk.example.com/mcp - connected",
+		"plugin:launch-plugin:tools: https://plugin.example.com/mcp - connected",
+	}, "\n"))
+	startClaudeLaunch(t, project, "-p", "prompt", "--bare", "--plugin-dir", pluginDir, "--mcp-config", "launch.json")
+	r := mcpTestRunner(t)
+
+	explicit := mcpToolPre(ProviderClaudeCode, project, "mcp__explicit__run")
+	r.resolveMCP(explicit)
+	plugin := mcpToolPre(ProviderClaudeCode, project, "mcp__plugin_launch-plugin_tools__run")
+	r.resolveMCP(plugin)
+	excluded := mcpToolPre(ProviderClaudeCode, project, "mcp__excluded__run")
+	r.resolveMCP(excluded)
+	if explicit.Tool.MCP.URL != "https://explicit.example.com/mcp" || plugin.Tool.MCP.URL != "https://plugin.example.com/mcp" {
+		t.Fatalf("bare explicit/plugin inventory wrong: explicit=%+v plugin=%+v", explicit.Tool.MCP, plugin.Tool.MCP)
+	}
+	if excluded.Tool.MCP.URL != "" {
+		t.Fatalf("bare mode must exclude ordinary config: %+v", excluded.Tool.MCP)
+	}
+	calls := fake.calls(t)
+	if len(calls) != 1 || len(calls[0].Args) == 0 || calls[0].Args[0] != "--bare" {
+		t.Fatalf("bare plugin discovery call wrong: %+v", calls)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessBarePluginURLFailsUnknown(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	fake := installFakeClaude(t, "plugin:remote:tools: https://remote.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--bare", "--plugin-url", "https://example.com/plugin.zip")
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__plugin_remote_tools__run")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "" || cliRuns(t, fake.countFile) != 0 {
+		t.Fatalf("bare remote plugin without a stable local manifest must stay unknown: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessPluginURLIsNotRefetched(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	fake := installFakeClaude(t, "ordinary: https://ordinary.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--plugin-url", "https://example.com/plugin.zip")
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__plugin_remote_tools__run")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "" {
+		t.Fatalf("remote launch plugin must stay unknown rather than be refetched: %+v", ev.Tool.MCP)
+	}
+	calls := fake.calls(t)
+	if len(calls) != 1 || strings.Join(calls[0].Args, " ") != "mcp list" {
+		t.Fatalf("plugin URL leaked into reconstructed command: %+v", calls)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessSafeMode(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(project, ".mcp.json"),
+		`{"mcpServers":{"excluded":{"url":"https://disk.example.com/mcp"}}}`)
+	writeConfig(t, filepath.Join(project, "launch.json"),
+		`{"mcpServers":{"explicit":{"type":"http","url":"https://explicit.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "excluded: https://wrong.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--safe-mode", "--mcp-config", "launch.json")
+	r := mcpTestRunner(t)
+	for _, name := range []string{"mcp__excluded__run", "mcp__explicit__run"} {
+		ev := mcpToolPre(ProviderClaudeCode, project, name)
+		r.resolveMCP(ev)
+		if ev.Tool.MCP.URL != "" {
+			t.Fatalf("safe mode must expose no MCP inventory: %+v", ev.Tool.MCP)
+		}
+	}
+	if got := cliRuns(t, fake.countFile); got != 0 {
+		t.Fatalf("safe mode must not invoke mcp list, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessContextsStayIsolated(t *testing.T) {
+	isolateHome(t)
+	fake := installFakeClaude(t, "shared: https://one.example.com/mcp - connected\n")
+	stateDir := t.TempDir()
+	r := quietRunner(WithDedupDir(stateDir))
+
+	projectOne := t.TempDir()
+	startClaudeLaunch(t, projectOne, "-p", "prompt")
+	one := mcpToolPre(ProviderClaudeCode, projectOne, "mcp__shared__run")
+	r.resolveMCP(one)
+
+	writeConfig(t, fake.outputFile, "shared: https://two.example.com/mcp - connected\n")
+	projectTwo := t.TempDir()
+	startClaudeLaunch(t, projectTwo, "-p", "prompt")
+	two := mcpToolPre(ProviderClaudeCode, projectTwo, "mcp__shared__run")
+	r.resolveMCP(two)
+
+	if one.Tool.MCP.URL != "https://one.example.com/mcp" || two.Tool.MCP.URL != "https://two.example.com/mcp" {
+		t.Fatalf("launch contexts contaminated each other: one=%+v two=%+v", one.Tool.MCP, two.Tool.MCP)
+	}
+	if got := cliRuns(t, fake.countFile); got != 2 {
+		t.Fatalf("different contexts must probe independently, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessRefreshReplacesRemovedServers(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	fake := installFakeClaude(t, strings.Join([]string{
+		"removed: https://removed.example.com/mcp - connected",
+		"kept: https://kept.example.com/mcp - connected",
+	}, "\n"))
+	startClaudeLaunch(t, project, "-p", "prompt")
+	now := time.Now().Truncate(time.Second)
+	r := mcpTestRunner(t)
+	r.now = func() time.Time { return now }
+
+	first := mcpToolPre(ProviderClaudeCode, project, "mcp__removed__run")
+	r.resolveMCP(first)
+	if first.Tool.MCP.URL == "" {
+		t.Fatalf("precondition: removed server did not resolve: %+v", first.Tool.MCP)
+	}
+	writeConfig(t, fake.outputFile, "kept: https://kept.example.com/mcp - connected\n")
+	now = now.Add(mcpListRefreshInterval + time.Second)
+	after := mcpToolPre(ProviderClaudeCode, project, "mcp__removed__run")
+	r.resolveMCP(after)
+	if after.Tool.MCP.URL != "" {
+		t.Fatalf("successful replacement refresh retained removed server: %+v", after.Tool.MCP)
+	}
+	if got := cliRuns(t, fake.countFile); got != 2 {
+		t.Fatalf("stale hit must refresh once, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessFailedRefreshKeepsSnapshot(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	fake := installFakeClaude(t, "retained: https://retained.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt")
+	now := time.Now().Truncate(time.Second)
+	r := mcpTestRunner(t)
+	r.now = func() time.Time { return now }
+
+	first := mcpToolPre(ProviderClaudeCode, project, "mcp__retained__run")
+	r.resolveMCP(first)
+	writeConfig(t, fake.outputFile, "")
+	writeConfig(t, fake.exitFile, "1")
+	now = now.Add(mcpListRefreshInterval + time.Second)
+	after := mcpToolPre(ProviderClaudeCode, project, "mcp__retained__run")
+	r.resolveMCP(after)
+	if after.Tool.MCP.URL != "https://retained.example.com/mcp" {
+		t.Fatalf("failed refresh discarded last successful snapshot: %+v", after.Tool.MCP)
+	}
+	if got := cliRuns(t, fake.countFile); got != 2 {
+		t.Fatalf("stale snapshot should attempt one refresh, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessPreservesQualifiedPluginIdentity(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	installFakeClaude(t, strings.Join([]string{
+		"plugin:alpha:tools: https://alpha.example.com/mcp - connected",
+		"plugin:beta:tools: https://beta.example.com/mcp - connected",
+	}, "\n"))
+	startClaudeLaunch(t, project, "-p", "prompt")
+	r := mcpTestRunner(t)
+	alpha := mcpToolPre(ProviderClaudeCode, project, "mcp__plugin_alpha_tools__run")
+	r.resolveMCP(alpha)
+	beta := mcpToolPre(ProviderClaudeCode, project, "mcp__plugin_beta_tools__run")
+	r.resolveMCP(beta)
+	if alpha.Tool.MCP.URL != "https://alpha.example.com/mcp" || beta.Tool.MCP.URL != "https://beta.example.com/mcp" {
+		t.Fatalf("source-qualified plugin identities collapsed: alpha=%+v beta=%+v", alpha.Tool.MCP, beta.Tool.MCP)
+	}
+}
+
+func TestClaudeMCPLaunchHarnessConcurrentContextsSingleflight(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	fake := installFakeClaude(t, "shared: https://shared.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt")
+	stateDir := t.TempDir()
+
+	const runners = 8
+	var wg sync.WaitGroup
+	errs := make(chan string, runners)
+	for range runners {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ev := mcpToolPre(ProviderClaudeCode, project, "mcp__shared__run")
+			quietRunner(WithDedupDir(stateDir)).resolveMCP(ev)
+			if ev.Tool.MCP.URL != "https://shared.example.com/mcp" {
+				errs <- fmt.Sprintf("%+v", ev.Tool.MCP)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent resolution failed: %s", err)
+	}
+	if got := cliRuns(t, fake.countFile); got != 1 {
+		t.Fatalf("concurrent contexts must share one probe, ran %d times", got)
+	}
+}
+
+func TestMCPListCacheCleanup(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.json")
+	newPath := filepath.Join(dir, "new.json")
+	writeConfig(t, oldPath, `{}`)
+	writeConfig(t, newPath, `{}`)
+	now := time.Unix(1_800_000_000, 0)
+	old := now.Add(-mcpListCacheRetention - time.Second)
+	if err := os.Chtimes(oldPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newPath, now, now); err != nil {
+		t.Fatal(err)
+	}
+	cleanupMCPListCache(dir, now)
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expired cache was not removed: %v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("fresh cache was removed: %v", err)
 	}
 }
 
@@ -575,6 +1089,20 @@ func TestResolveMCPClaudeListFallbackDisabled(t *testing.T) {
 	mcpTestRunner(t, WithoutMCPListFallback()).resolveMCP(ev)
 	if ev.Tool.MCP.URL != "" || cliRuns(t, count) != 0 {
 		t.Errorf("WithoutMCPListFallback must skip the CLI: %+v (runs=%d)", ev.Tool.MCP, cliRuns(t, count))
+	}
+}
+
+func TestClaudeMCPLaunchHarnessFallbackDisabledKeepsDirectConfig(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(project, ".mcp.json"),
+		`{"mcpServers":{"github":{"url":"https://direct.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "github: https://wrong.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--plugin-dir", "./plugin")
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__github__run")
+	mcpTestRunner(t, WithoutMCPListFallback()).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://direct.example.com/mcp" || cliRuns(t, fake.countFile) != 0 {
+		t.Fatalf("disabled fallback must retain direct config resolution: %+v", ev.Tool.MCP)
 	}
 }
 

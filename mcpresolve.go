@@ -1,16 +1,11 @@
 package agenthooks
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -65,37 +60,32 @@ func (r *Runner) resolveMCP(typed any) {
 	if tc.MCP == nil || tc.MCP.URL != "" || tc.MCP.Command != "" {
 		return
 	}
-	entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
-
 	var (
 		matched      *mcpConfigEntry
 		server, tool string
 	)
 	switch base.Provider {
 	case ProviderClaudeCode:
-		// mcp__<prefix>__<tool>, prefix = claude-sanitized config name.
-		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
-		if matched == nil && !r.mcpListOff {
-			// Slow path (quirk #26): plugin- and claude.ai-connector servers
-			// appear in no config file; ask `claude mcp list` once per
-			// session and match against the cached inventory.
-			matched, server, tool = matchSanitizedPrefix(r.claudeMCPListEntries(base.Session.ID), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
-		}
+		matched, server, tool = r.resolveClaudeMCP(base, tc)
 	case ProviderKimi:
+		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp__<server>__<tool> with the configured name verbatim — hyphens
 		// survive unsanitized (verified against kimi-code 0.22.2).
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", verbatimMCPName)
 	case ProviderCodex:
+		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// Codex's sanitizer preserves consecutive underscores, so the prefix
 		// itself can contain "__" and the naive first-"__" split is wrong;
 		// longest-prefix matching also repairs Server/Tool.
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName)
 	case ProviderGemini:
+		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp_<server>_<tool> with a single-underscore separator: the split
 		// is ambiguous whenever the server name contains "_" (quirk #15), so
 		// match configured names longest-first.
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", verbatimMCPName)
 	case ProviderCursor:
+		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// MCP:<tool> carries no server identity (quirk #3). Attribution is
 		// only sound when exactly one server is configured.
 		if len(entries) == 1 {
@@ -114,6 +104,48 @@ func (r *Runner) resolveMCP(typed any) {
 	if tool != "" {
 		tc.MCP.Tool = tool
 	}
+}
+
+func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
+	ctx := currentClaudeLaunchContext(base.Session.CWD)
+	if ctx.SafeMode {
+		return nil, "", ""
+	}
+	explicit := ctx.explicitMCPEntries()
+	if matched, server, tool := matchSanitizedPrefix(explicit, tc.Name, "mcp__", "__", claudeSanitizeMCPName); matched != nil {
+		return matched, server, tool
+	}
+	if ctx.StrictMCP {
+		return nil, "", ""
+	}
+	if ctx.Bare {
+		if r.mcpListOff || len(ctx.PluginDirs) == 0 {
+			return nil, "", ""
+		}
+		entries := ctx.barePluginEntries(r.claudeMCPListEntries(ctx))
+		return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+	}
+
+	// Settings and launch-only plugins can remove or shadow ordinary config,
+	// so their reconstructed CLI inventory is authoritative. An explicit
+	// --mcp-config was already checked above because `mcp list` cannot accept
+	// that variadic top-level flag.
+	if len(ctx.ReplayArgs) > 0 {
+		if r.mcpListOff {
+			entries := loadMCPConfigEntries(ProviderClaudeCode, base.Session.CWD)
+			return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+		}
+		return matchSanitizedPrefix(r.claudeMCPListEntries(ctx), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+	}
+
+	configured := loadMCPConfigEntries(ProviderClaudeCode, base.Session.CWD)
+	if matched, server, tool := matchSanitizedPrefix(configured, tc.Name, "mcp__", "__", claudeSanitizeMCPName); matched != nil {
+		return matched, server, tool
+	}
+	if r.mcpListOff {
+		return nil, "", ""
+	}
+	return matchSanitizedPrefix(r.claudeMCPListEntries(ctx), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 }
 
 // resolveOpenCodeMCP detects and resolves OpenCode MCP calls. OpenCode
@@ -300,23 +332,13 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 				readOpenCodeConfig(filepath.Join(cfgDir, "opencode", "opencode.jsonc")))
 		}
 	}
-	seen := map[string]bool{}
-	var out []mcpConfigEntry
-	for _, g := range groups {
-		for _, e := range g {
-			if e.Name == "" || seen[e.Name] {
-				continue
-			}
-			seen[e.Name] = true
-			out = append(out, e)
-		}
-	}
-	return out
+	return firstMCPEntries(groups...)
 }
 
 // mcpServerJSON is the per-server config shape shared by Claude's .mcp.json,
 // Cursor's mcp.json, Gemini's settings.json and Kimi's mcp.json.
 type mcpServerJSON struct {
+	Type    string   `json:"type"`
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
 	URL     string   `json:"url"`
@@ -330,6 +352,10 @@ func readMCPServersJSON(path string) []mcpConfigEntry {
 	if err != nil {
 		return nil
 	}
+	return parseMCPServersJSON(data)
+}
+
+func parseMCPServersJSON(data []byte) []mcpConfigEntry {
 	var doc struct {
 		MCPServers map[string]mcpServerJSON `json:"mcpServers"`
 	}
@@ -337,6 +363,25 @@ func readMCPServersJSON(path string) []mcpConfigEntry {
 		return nil
 	}
 	return mcpEntriesFromJSON(doc.MCPServers)
+}
+
+func firstMCPEntries(groups ...[]mcpConfigEntry) []mcpConfigEntry {
+	seen := map[string]bool{}
+	var out []mcpConfigEntry
+	for _, group := range groups {
+		for _, entry := range group {
+			key := entry.Prefix
+			if key == "" {
+				key = entry.Name
+			}
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // readClaudeUserConfig extracts the cwd's project-scoped ("local" scope)
@@ -536,69 +581,12 @@ func parseCodexMCPServers(data []byte) []mcpConfigEntry {
 	return out
 }
 
-// --- Claude slow path: `claude mcp list`, once per session (quirk #26) ---
+// --- Claude slow path: contextual `claude mcp list` (quirk #26) ---
 
 // Plugin-provided and claude.ai-connector MCP servers appear in no config
 // file on disk; only `claude mcp list` knows their transport. The CLI
-// health-checks every server (seconds of wall time), so the runner shells
-// out at most once per session — on the first MCP call the config fast path
-// can't attribute — and caches the parsed inventory on disk keyed by session
-// id. Failed and empty runs are cached too: one attempt per session, ever.
-
-// claudeMCPListTimeout caps the health-checking CLI call, leaving most of
-// the ~60s provider hook budget for the handler (the runner's own deadline
-// is 55s, see defaultDeadline).
-const claudeMCPListTimeout = 15 * time.Second
-
-// claudeMCPListEntries returns the session's cached `claude mcp list`
-// inventory, invoking the CLI on first call for the session.
-func (r *Runner) claudeMCPListEntries(sessionID string) []mcpConfigEntry {
-	if sessionID == "" {
-		return nil // no key to cache under; don't risk one CLI call per event
-	}
-	dir := filepath.Join(r.stateDir(), "agenthooks-mcplist")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil
-	}
-	key := sha256.Sum256([]byte(sessionID))
-	path := filepath.Join(dir, hex.EncodeToString(key[:])[:32]+".json")
-	if data, err := os.ReadFile(path); err == nil {
-		var cached []mcpConfigEntry
-		if json.Unmarshal(data, &cached) == nil {
-			return cached
-		}
-	}
-
-	entries := runClaudeMCPList()
-
-	// Cache even a nil result: the inventory won't appear mid-session, and
-	// re-probing on every MCP event would stall each one for the timeout.
-	if data, err := json.Marshal(entries); err == nil {
-		if tmp, err := os.CreateTemp(dir, "mcplist-*"); err == nil {
-			_, werr := tmp.Write(data)
-			if cerr := tmp.Close(); werr == nil && cerr == nil {
-				_ = os.Rename(tmp.Name(), path)
-			} else {
-				_ = os.Remove(tmp.Name())
-			}
-		}
-	}
-	return entries
-}
-
-func runClaudeMCPList() []mcpConfigEntry {
-	bin, err := exec.LookPath("claude")
-	if err != nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), claudeMCPListTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "mcp", "list").Output()
-	if err != nil && len(out) == 0 {
-		return nil
-	}
-	return parseClaudeMCPList(string(out))
-}
+// health-checks every server (seconds of wall time), so the result is cached
+// by launch context and refreshed as a replacement snapshot.
 
 // parseClaudeMCPList parses the textual output of `claude mcp list`. Lines
 // that don't match the expected shape are skipped (the "Checking MCP server

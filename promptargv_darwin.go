@@ -23,6 +23,9 @@ func procArgs(pid int) ([]string, error) {
 		return nil, fmt.Errorf("agenthooks: short procargs2 for pid %d", pid)
 	}
 	argc := int(binary.LittleEndian.Uint32(raw[:4]))
+	if argc <= 0 {
+		return nil, fmt.Errorf("agenthooks: invalid argc for pid %d", pid)
+	}
 	rest := raw[4:]
 	// Skip the exec path and its NUL padding.
 	i := bytes.IndexByte(rest, 0)
@@ -40,6 +43,9 @@ func procArgs(pid int) ([]string, error) {
 			break
 		}
 		args = append(args, string(f))
+	}
+	if len(args) != argc {
+		return nil, fmt.Errorf("agenthooks: incomplete procargs2 for pid %d", pid)
 	}
 	return args, nil
 }

@@ -48,6 +48,7 @@ type BeforeMCPExecutionInput struct {
 	WorkspaceRoots []string                   `json:"workspace_roots"`
 	ToolName       string                     `json:"tool_name"`
 	ToolInput      json.RawMessage            `json:"tool_input"`
+	MCPServerName  string                     `json:"mcp_server_name"`
 	URL            string                     `json:"url"`
 	Command        string                     `json:"command"`
 	Extra          map[string]json.RawMessage `json:"-"`
@@ -62,6 +63,9 @@ type AfterMCPExecutionInput struct {
 	ToolName       string                     `json:"tool_name"`
 	ToolInput      json.RawMessage            `json:"tool_input"`
 	ToolResponse   json.RawMessage            `json:"tool_response"`
+	MCPServerName  string                     `json:"mcp_server_name"`
+	URL            string                     `json:"url"`
+	Command        string                     `json:"command"`
 	Extra          map[string]json.RawMessage `json:"-"`
 }
 

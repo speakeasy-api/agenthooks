@@ -32,22 +32,27 @@ func cursorArgvPrompt() string {
 // findAncestorArgs climbs the process tree until match accepts a process's
 // argv. procPPID/procArgs are per-OS (promptargv_*.go).
 func findAncestorArgs(match func([]string) bool) []string {
+	args, _ := findAncestorProcess(match)
+	return args
+}
+
+func findAncestorProcess(match func([]string) bool) ([]string, int) {
 	pid := parentPID()
 	for depth := 0; depth < backfillMaxAncestors && pid > 1; depth++ {
 		args, err := procArgs(pid)
 		if err != nil {
-			return nil
+			return nil, 0
 		}
 		if match(args) {
-			return args
+			return args, pid
 		}
 		next, err := procPPID(pid)
 		if err != nil || next == pid {
-			return nil
+			return nil, 0
 		}
 		pid = next
 	}
-	return nil
+	return nil, 0
 }
 
 // isCursorAgentArgs recognizes a cursor-agent print-mode invocation. The

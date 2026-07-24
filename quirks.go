@@ -153,4 +153,8 @@ var quirkRegistry = []Quirk{
 		Behavior:   "non-interactive print mode (-p) does not fire beforeSubmitPrompt; sessionStart and tool events fire normally",
 		Mitigation: "runner backfills a reporting-only prompt.submitted (Backfilled=true, Raw nil, no capabilities, decisions discarded) before the next event that implies one, once per recovered prompt per session (resumes covered); prompt text recovered from the transcript the payload names, argv fallback",
 		Reference:  "verified against cursor agent CLI 2026.07.01"},
+	{ID: 32, Provider: ProviderCodex, Versions: "observed 0.145.0", Event: KindToolPre,
+		Behavior:   "launch -c/--config overrides, profiles, and plugin MCP servers can change the effective inventory without changing CODEX_HOME/config.toml; tool hooks carry only the tool name",
+		Mitigation: "the hook recovers Codex ancestor argv before detachment, passes the launch context to workers over stdin, and warms a context-keyed `codex mcp list --json` replacement snapshot from SessionStart",
+		Reference:  "verified against codex-cli 0.145.0"},
 }

@@ -1,7 +1,9 @@
 package agenthooks
 
 import (
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -13,6 +15,37 @@ func TestStripAsyncFlag(t *testing.T) {
 	rest, ok = stripAsyncFlag([]string{"agenthooks", "run", "--provider=codex"})
 	if ok || len(rest) != 3 {
 		t.Errorf("no flag means no detach: %v %v", rest, ok)
+	}
+}
+
+func TestCodexLaunchContextUsesStdin(t *testing.T) {
+	launch := codexLaunchContext{CWD: "/work", Overrides: []string{"--config", "secret=value"}}
+	args, input, err := encodeCodexLaunchContext([]string{"agenthooks", "run", "--provider=codex"}, strings.NewReader(`{"hook":true}`), launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(args, " "), "secret=value") || !hasInternalFlag(args, codexLaunchContextFlag) {
+		t.Fatalf("launch context leaked into argv: %#v", args)
+	}
+	decoded, remaining, err := decodeCodexLaunchContext(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := io.ReadAll(remaining)
+	if !reflect.DeepEqual(decoded, launch) || string(payload) != `{"hook":true}` {
+		t.Fatalf("context=%+v payload=%q", decoded, payload)
+	}
+
+	warmArgs, warmInput, err := encodeCodexMCPWarm(args, launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(warmArgs, " "), "secret=value") || !hasInternalFlag(warmArgs, codexMCPWarmFlag) {
+		t.Fatalf("warm context leaked into argv: %#v", warmArgs)
+	}
+	decoded, _, err = decodeCodexLaunchContext(warmInput)
+	if err != nil || !reflect.DeepEqual(decoded, launch) {
+		t.Fatalf("warm context=%+v err=%v", decoded, err)
 	}
 }
 

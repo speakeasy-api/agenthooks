@@ -86,11 +86,7 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 		// survive unsanitized (verified against kimi-code 0.22.2).
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", verbatimMCPName)
 	case ProviderCodex:
-		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
-		// Codex's sanitizer preserves consecutive underscores, so the prefix
-		// itself can contain "__" and the naive first-"__" split is wrong;
-		// longest-prefix matching also repairs Server/Tool.
-		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName)
+		matched, server, tool = r.resolveCodexMCP(base, tc)
 	case ProviderGemini:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp_<server>_<tool> with a single-underscore separator: the split
@@ -117,6 +113,23 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 	if tool != "" {
 		tc.MCP.Tool = tool
 	}
+}
+
+func (r *Runner) resolveCodexMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
+	launch, recovered := r.currentCodexLaunchContext(base.Session.CWD)
+	if recovered && launch.Unreplayable {
+		return nil, "", ""
+	}
+	if recovered && !r.mcpListOff {
+		return matchSanitizedPrefix(r.codexMCPListEntries(launch), tc.Name, "mcp__", "__", codexSanitizeMCPName)
+	}
+	if recovered && launch.hasOverrides() {
+		return nil, "", ""
+	}
+	entries := loadMCPConfigEntries(ProviderCodex, base.Session.CWD)
+	// Codex's sanitizer preserves consecutive underscores, so the prefix
+	// itself can contain "__" and the naive first-"__" split is wrong.
+	return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName)
 }
 
 func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
@@ -595,6 +608,48 @@ func parseCodexMCPServers(data []byte) []mcpConfigEntry {
 		out = append(out, e)
 	}
 	return out
+}
+
+type codexMCPListEntry struct {
+	Name      string                `json:"name"`
+	Enabled   *bool                 `json:"enabled"`
+	Transport codexMCPListTransport `json:"transport"`
+}
+
+type codexMCPListTransport struct {
+	Type    string   `json:"type"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	URL     string   `json:"url"`
+}
+
+func parseCodexMCPList(data []byte) []mcpConfigEntry {
+	entries, _ := decodeCodexMCPList(data)
+	return entries
+}
+
+func decodeCodexMCPList(data []byte) ([]mcpConfigEntry, bool) {
+	var servers []codexMCPListEntry
+	if json.Unmarshal(data, &servers) != nil {
+		return nil, false
+	}
+	var out []mcpConfigEntry
+	for _, server := range servers {
+		if server.Name == "" || (server.Enabled != nil && !*server.Enabled) {
+			continue
+		}
+		entry := mcpConfigEntry{Name: server.Name}
+		switch server.Transport.Type {
+		case "stdio":
+			entry.Command = joinCommand(server.Transport.Command, server.Transport.Args)
+		case "streamable_http", "sse":
+			entry.URL = server.Transport.URL
+		}
+		if entry.URL != "" || entry.Command != "" {
+			out = append(out, entry)
+		}
+	}
+	return out, true
 }
 
 // --- Claude slow path: contextual `claude mcp list` (quirk #26) ---

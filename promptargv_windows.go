@@ -37,6 +37,37 @@ func procArgs(pid int) ([]string, error) {
 	return windows.DecomposeCommandLine(commandLine)
 }
 
-func procPPID(int) (int, error) {
-	return 0, fmt.Errorf("agenthooks: ancestor ppid lookup unsupported on windows")
+func procExecutable(pid int) (string, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(h)
+	buf := make([]uint16, 32768)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil {
+		return "", err
+	}
+	return string(utf16.Decode(buf[:size])), nil
+}
+
+func procPPID(pid int) (int, error) {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer windows.CloseHandle(snapshot)
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	if err := windows.Process32First(snapshot, &entry); err != nil {
+		return 0, err
+	}
+	for {
+		if entry.ProcessID == uint32(pid) {
+			return int(entry.ParentProcessID), nil
+		}
+		if err := windows.Process32Next(snapshot, &entry); err != nil {
+			return 0, err
+		}
+	}
 }

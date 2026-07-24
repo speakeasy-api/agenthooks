@@ -50,6 +50,21 @@ func procArgs(pid int) ([]string, error) {
 	return args, nil
 }
 
+func procExecutable(pid int) (string, error) {
+	raw, err := unix.SysctlRaw("kern.procargs2", pid)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) < 4 {
+		return "", fmt.Errorf("agenthooks: short procargs2 for pid %d", pid)
+	}
+	rest := raw[4:]
+	if i := bytes.IndexByte(rest, 0); i >= 0 {
+		return string(rest[:i]), nil
+	}
+	return "", fmt.Errorf("agenthooks: malformed procargs2 for pid %d", pid)
+}
+
 // procPPID reads the parent pid from the process's kinfo_proc.
 func procPPID(pid int) (int, error) {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)

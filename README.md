@@ -141,9 +141,12 @@ Codex trust-hash pre-seeding.
   come from Cursor and Gemini MCP payloads and are otherwise resolved from
   the provider's own MCP config files (`.mcp.json`, `~/.claude.json`,
   `~/.codex/config.toml`, `.cursor/mcp.json`, `.gemini/settings.json` plus
-  extension manifests, `~/.kimi/mcp.json`, `opencode.json(c)`). OpenCode's
+  extension manifests, `.kimi-code/mcp.json`, `~/.kimi/mcp.json`,
+  `opencode.json(c)`). OpenCode's
   shim uses the running server's resolved inventory, including custom, inline,
-  remote, and managed configuration. On Claude Code, servers absent from
+  remote, and managed configuration. Codex replays launch `-c` overrides and
+  profiles into a detached `codex mcp list --json` warm, keyed by the recovered
+  launch context. On Claude Code, servers absent from
   config files (plugins, claude.ai connectors) are attributed via
   `claude mcp list`, started
   as a detached `SessionStart` warm in the launching process's project and
@@ -153,13 +156,14 @@ Codex trust-hash pre-seeding.
   `--setting-sources`, `--plugin-dir`, `--bare`, and
   `--safe-mode` semantics are recovered through `CLAUDE_PID`; older versions
   fall back to the ordinary on-disk context. Inventories are cached briefly by
-  a secret-safe context digest and replaced on refresh so removals propagate.
+  a secret-safe context digest under the user cache directory and replaced on
+  refresh so removals propagate.
   Remote `--plugin-url` servers stay unattributed rather than being refetched
   with potentially different code during hook dispatch.
   Config-resolved transport is flagged `FromConfig` and is best-effort —
   ambiguous or unrecoverable matches stay empty.
   Disable with `WithoutMCPResolution()` (everything) or
-  `WithoutMCPListFallback()` (just the CLI probe).
+  `WithoutMCPListFallback()` (provider CLI probes).
 - The quirk registry (`agenthooks.Quirks()`) is the machine-readable list of
   provider glue this library hides, and doubles as the conformance-test plan.
 

@@ -19,8 +19,13 @@ import (
 const testHelperEnv = "AGENTHOOKS_TEST_HELPER"
 
 func TestMain(m *testing.M) {
-	if strings.EqualFold(strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0])), "claude") {
+	name := strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0]))
+	if strings.EqualFold(name, "claude") {
 		fakeClaudeMain()
+		os.Exit(0)
+	}
+	if strings.EqualFold(name, "codex") {
+		fakeCodexMain()
 		os.Exit(0)
 	}
 	switch os.Getenv(testHelperEnv) {
@@ -46,6 +51,36 @@ func TestMain(m *testing.M) {
 		Main(r)
 	}
 	os.Exit(m.Run())
+}
+
+func fakeCodexMain() {
+	if path := os.Getenv("AGENTHOOKS_FAKE_CODEX_COUNT"); path != "" {
+		f, _ := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if f != nil {
+			_, _ = f.WriteString("x\n")
+			_ = f.Close()
+		}
+	}
+	if path := os.Getenv("AGENTHOOKS_FAKE_CODEX_CALLS"); path != "" {
+		cwd, _ := os.Getwd()
+		data, _ := json.Marshal(fakeClaudeCall{Args: os.Args[1:], Dir: cwd})
+		f, _ := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if f != nil {
+			_, _ = f.Write(append(data, '\n'))
+			_ = f.Close()
+		}
+	}
+	if gate := os.Getenv("AGENTHOOKS_FAKE_CODEX_GATE"); gate != "" {
+		for {
+			if _, err := os.Stat(gate); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if data, err := os.ReadFile(os.Getenv("AGENTHOOKS_FAKE_CODEX_OUTPUT")); err == nil {
+		_, _ = os.Stdout.Write(data)
+	}
 }
 
 func fakeClaudeMain() {
@@ -123,6 +158,13 @@ type fakeClaude struct {
 	gateFile   string
 }
 
+type fakeCodex struct {
+	countFile  string
+	outputFile string
+	callsFile  string
+	gateFile   string
+}
+
 type fakeClaudeCall struct {
 	Args []string `json:"args"`
 	Dir  string   `json:"dir"`
@@ -166,13 +208,58 @@ func installFakeClaude(t *testing.T, output string) fakeClaude {
 	return h
 }
 
+func installFakeCodex(t *testing.T, output string) fakeCodex {
+	t.Helper()
+	binDir := t.TempDir()
+	name := "codex"
+	if strings.EqualFold(filepath.Ext(os.Args[0]), ".exe") {
+		name += ".exe"
+	}
+	src, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(binDir, name)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := fakeCodex{
+		countFile:  filepath.Join(binDir, "count"),
+		outputFile: filepath.Join(binDir, "output"),
+		callsFile:  filepath.Join(binDir, "calls"),
+		gateFile:   filepath.Join(binDir, "gate"),
+	}
+	writeConfig(t, h.outputFile, output)
+	t.Setenv("PATH", binDir)
+	t.Setenv("AGENTHOOKS_FAKE_CODEX_COUNT", h.countFile)
+	t.Setenv("AGENTHOOKS_FAKE_CODEX_OUTPUT", h.outputFile)
+	t.Setenv("AGENTHOOKS_FAKE_CODEX_CALLS", h.callsFile)
+	return h
+}
+
+func (h fakeCodex) calls(t *testing.T) []fakeClaudeCall {
+	t.Helper()
+	return readFakeCalls(t, h.callsFile)
+}
+
 func agenthooksMainCommand(t *testing.T, stateDir, resultFile, readyFile string, payload []byte) *exec.Cmd {
+	t.Helper()
+	return agenthooksMainCommandForProvider(t, ProviderClaudeCode, nil, stateDir, resultFile, readyFile, payload)
+}
+
+func agenthooksMainCommandForProvider(t *testing.T, provider Provider, extraArgs []string, stateDir, resultFile, readyFile string, payload []byte) *exec.Cmd {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "agenthooks", "run", "--provider=claude-code")
+	args := []string{"agenthooks", "run", "--provider=" + string(provider)}
+	args = append(args, extraArgs...)
+	cmd := exec.Command(exe, args...)
 	cmd.Env = append(withoutEnv(os.Environ(), testHelperEnv),
 		testHelperEnv+"=agenthooks-main",
 		"AGENTHOOKS_TEST_STATE_DIR="+stateDir,
@@ -181,6 +268,15 @@ func agenthooksMainCommand(t *testing.T, stateDir, resultFile, readyFile string,
 	)
 	cmd.Stdin = strings.NewReader(string(payload))
 	return cmd
+}
+
+func codexHookPayload(t *testing.T, launch codexLaunchContext, payload []byte) []byte {
+	t.Helper()
+	data, err := json.Marshal(launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(append(data, '\n'), payload...)
 }
 
 func waitForTestFile(t *testing.T, path string) {
@@ -211,7 +307,12 @@ func cliRuns(t *testing.T, countFile string) int {
 
 func (h fakeClaude) calls(t *testing.T) []fakeClaudeCall {
 	t.Helper()
-	f, err := os.Open(h.callsFile)
+	return readFakeCalls(t, h.callsFile)
+}
+
+func readFakeCalls(t *testing.T, path string) []fakeClaudeCall {
+	t.Helper()
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -376,6 +477,173 @@ url = "https://red-herring.example.com"
 	r.resolveMCP(ev)
 	if ev.Tool.MCP.URL != "" {
 		t.Errorf("disabled server must not resolve: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestParseCodexLaunchArgs(t *testing.T) {
+	ctx := parseCodexLaunchArgs([]string{
+		"codex", "-c", "one=1", "-ctwo=2", "--config=three=3", "-p", "old",
+		"exec", "--profile=new", "--enable", "plugin_mcp", "--disable=legacy", "--ignore-user-config", "--", "--config=ignored",
+	}, "/work")
+	want := []string{"--config", "one=1", "--config", "two=2", "--config", "three=3", "--enable", "plugin_mcp", "--disable", "legacy"}
+	if ctx.CWD != "/work" || ctx.Executable != "codex" || ctx.Profile != "new" || !ctx.Unreplayable || strings.Join(ctx.Overrides, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("Codex launch context = %+v", ctx)
+	}
+	wantReplay := append([]string{"--profile", "new"}, want...)
+	if strings.Join(ctx.replayArgs(), "\x00") != strings.Join(wantReplay, "\x00") {
+		t.Fatalf("Codex replay args = %#v", ctx.replayArgs())
+	}
+}
+
+func TestParseCodexMCPList(t *testing.T) {
+	entries := parseCodexMCPList([]byte(`[
+		{"name":"local","enabled":true,"transport":{"type":"stdio","command":"npx","args":["-y","srv"],"env":{"TOKEN":"secret"}}},
+		{"name":"remote","enabled":true,"transport":{"type":"streamable_http","url":"https://example.com/mcp","http_headers":{"Authorization":"secret"}}},
+		{"name":"off","enabled":false,"transport":{"type":"streamable_http","url":"https://off.example.com"}},
+		{"name":"unknown","enabled":true,"transport":{"type":"tcp","url":"tcp://localhost"}}
+	]`))
+	if len(entries) != 2 || entries[0].Name != "local" || entries[0].Command != "npx -y srv" ||
+		entries[1].Name != "remote" || entries[1].URL != "https://example.com/mcp" {
+		t.Fatalf("Codex MCP list = %+v", entries)
+	}
+	if _, ok := decodeCodexMCPList([]byte(`not-json`)); ok {
+		t.Fatal("malformed Codex inventory reported success")
+	}
+}
+
+func TestResolveMCPCodexLaunchInventoryWins(t *testing.T) {
+	home := isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.shared]
+url = "https://disk.example.com/mcp"
+`)
+	fake := installFakeCodex(t, `[{"name":"shared","enabled":true,"transport":{"type":"streamable_http","url":"https://launch.example.com/mcp"}}]`)
+	launch := parseCodexLaunchArgs([]string{"codex", "-c", `mcp_servers.shared.url="https://launch.example.com/mcp"`}, project)
+	r := mcpTestRunner(t)
+	r.codexLaunchContext = &launch
+	ev := mcpToolPre(ProviderCodex, project, "mcp__shared__run")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://launch.example.com/mcp" || !ev.Tool.MCP.FromConfig {
+		t.Fatalf("Codex launch inventory = %+v", ev.Tool.MCP)
+	}
+	calls := fake.calls(t)
+	want := append(launch.replayArgs(), "mcp", "list", "--json")
+	if len(calls) != 1 || strings.Join(calls[0].Args, "\x00") != strings.Join(want, "\x00") || calls[0].Dir != project {
+		t.Fatalf("Codex inventory call = %+v, want args %#v dir %q", calls, want, project)
+	}
+}
+
+func TestResolveMCPCodexUnreplayableLaunchStaysUnknown(t *testing.T) {
+	home := isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.shared]
+url = "https://disk.example.com/mcp"
+`)
+	launch := parseCodexLaunchArgs([]string{"codex", "--ignore-user-config"}, project)
+	r := mcpTestRunner(t)
+	r.codexLaunchContext = &launch
+	ev := mcpToolPre(ProviderCodex, project, "mcp__shared__run")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP.URL != "" || ev.Tool.MCP.Command != "" || ev.Tool.MCP.FromConfig {
+		t.Fatalf("unreplayable Codex launch resolved from disk: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestCodexSessionStartWarmsInventoryInBackground(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	stateDir := t.TempDir()
+	resultFile := filepath.Join(t.TempDir(), "result")
+	readyFile := filepath.Join(t.TempDir(), "ready")
+	fake := installFakeCodex(t, `[{"name":"background","enabled":true,"transport":{"type":"streamable_http","url":"https://background.example.com/mcp"}}]`)
+	t.Setenv("AGENTHOOKS_FAKE_CODEX_GATE", fake.gateFile)
+	t.Cleanup(func() { _ = os.WriteFile(fake.gateFile, []byte("release"), 0o600) })
+	launch := parseCodexLaunchArgs([]string{"codex", "-c", `mcp_servers.background.url="https://background.example.com/mcp"`}, project)
+	extra := []string{codexLaunchContextFlag}
+
+	sessionPayload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"SessionStart","session_id":"s-background","cwd":%q,"source":"startup"}`,
+		project,
+	))
+	session := agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
+		codexHookPayload(t, launch, sessionPayload))
+	if err := session.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Process.Kill() })
+	sessionDone := make(chan error, 1)
+	go func() { sessionDone <- session.Wait() }()
+	select {
+	case err := <-sessionDone:
+		if err != nil {
+			t.Fatalf("Codex SessionStart failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = session.Process.Kill()
+		t.Fatal("Codex SessionStart waited for blocked inventory discovery")
+	}
+
+	waitForTestFile(t, fake.countFile)
+	_ = os.Remove(readyFile)
+	prePayload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"PreToolUse","session_id":"s-background","cwd":%q,"tool_name":"mcp__background__run","tool_input":{}}`,
+		project,
+	))
+	pre := agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
+		codexHookPayload(t, launch, prePayload))
+	if err := pre.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pre.Process.Kill() })
+	preDone := make(chan error, 1)
+	go func() { preDone <- pre.Wait() }()
+	waitForTestFile(t, readyFile)
+	select {
+	case err := <-preDone:
+		t.Fatalf("Codex MCP hook did not wait for in-flight inventory: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	writeConfig(t, fake.gateFile, "release")
+	select {
+	case err := <-preDone:
+		if err != nil {
+			t.Fatalf("Codex MCP hook failed after inventory arrived: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = pre.Process.Kill()
+		t.Fatal("Codex MCP hook did not consume background inventory")
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "https://background.example.com/mcp" || cliRuns(t, fake.countFile) != 1 {
+		t.Fatalf("Codex background inventory result=%q probes=%d", data, cliRuns(t, fake.countFile))
+	}
+}
+
+func TestCodexAsyncHookPreservesLaunchContext(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	resultFile := filepath.Join(t.TempDir(), "result")
+	readyFile := filepath.Join(t.TempDir(), "ready")
+	installFakeCodex(t, `[{"name":"async","enabled":true,"transport":{"type":"streamable_http","url":"https://async.example.com/mcp"}}]`)
+	launch := parseCodexLaunchArgs([]string{"codex", "-c", `mcp_servers.async.url="https://async.example.com/mcp"`}, project)
+	payload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"PreToolUse","session_id":"s-async","cwd":%q,"tool_name":"mcp__async__run","tool_input":{}}`,
+		project,
+	))
+	cmd := agenthooksMainCommandForProvider(t, ProviderCodex,
+		[]string{codexLaunchContextFlag, "--async"}, t.TempDir(), resultFile, readyFile,
+		codexHookPayload(t, launch, payload))
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	waitForTestFile(t, resultFile)
+	data, err := os.ReadFile(resultFile)
+	if err != nil || string(data) != "https://async.example.com/mcp" {
+		t.Fatalf("async Codex transport=%q err=%v", data, err)
 	}
 }
 

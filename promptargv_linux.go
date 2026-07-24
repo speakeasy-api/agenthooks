@@ -30,6 +30,10 @@ func procArgs(pid int) ([]string, error) {
 	return args, nil
 }
 
+func procExecutable(pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+}
+
 // procPPID reads the parent pid from /proc/<pid>/stat. The comm field may
 // contain spaces and parens, so parsing starts after the last ')'.
 func procPPID(pid int) (int, error) {

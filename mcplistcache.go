@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	claudeMCPListTimeout   = 15 * time.Second
-	mcpListWaitTimeout     = claudeMCPListTimeout + time.Second
+	mcpListProbeTimeout    = 15 * time.Second
+	mcpListWaitTimeout     = mcpListProbeTimeout + time.Second
 	mcpListRefreshInterval = 5 * time.Minute
 	mcpListCacheRetention  = 24 * time.Hour
 )
@@ -44,11 +44,17 @@ func (r *Runner) warmClaudeMCP(cwd string) {
 }
 
 func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
-	dir := filepath.Join(r.stateDir(), "agenthooks-mcplist")
+	return r.cachedMCPListEntries(launch.cacheKey(), func() ([]mcpConfigEntry, bool) {
+		return runClaudeMCPList(launch)
+	})
+}
+
+func (r *Runner) cachedMCPListEntries(key string, probe func() ([]mcpConfigEntry, bool)) []mcpConfigEntry {
+	dir := r.mcpListCacheDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil
 	}
-	path := filepath.Join(dir, launch.cacheKey()+".json")
+	path := filepath.Join(dir, key+".json")
 	now := r.mcpListNow()
 	cached := readMCPListCache(path)
 	if mcpListCacheFresh(cached, now) {
@@ -67,7 +73,7 @@ func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEnt
 			if cached.CheckedAt != 0 {
 				return cached.Entries
 			}
-			if entries, success := runClaudeMCPList(launch); success {
+			if entries, success := probe(); success {
 				return entries
 			}
 			return nil
@@ -97,12 +103,56 @@ func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEnt
 	if mcpListCacheFresh(cached, now) {
 		return cached.Entries
 	}
-	if entries, success := runClaudeMCPList(launch); success {
+	if entries, success := probe(); success {
 		cached.Entries = entries // successful probes replace, so removals stick
 	}
 	cached.CheckedAt = now.Unix()
 	writeMCPListCache(path, cached)
 	return cached.Entries
+}
+
+func (r *Runner) mcpListCacheDir() string {
+	if r.dedupDir != "" {
+		return filepath.Join(r.dedupDir, "agenthooks-mcplist")
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "agenthooks", "mcp-list")
+	}
+	return filepath.Join(os.TempDir(), "agenthooks-mcplist")
+}
+
+func (r *Runner) currentCodexLaunchContext(cwd string) (codexLaunchContext, bool) {
+	if r.codexLaunchContext != nil {
+		launch := *r.codexLaunchContext
+		if cwd != "" {
+			launch.CWD = cwd
+		}
+		return launch, true
+	}
+	return currentCodexLaunchContext(cwd)
+}
+
+func (r *Runner) codexMCPWarmContext(cwd string) (codexLaunchContext, bool) {
+	if r.mcpResolveOff || r.mcpListOff {
+		return codexLaunchContext{}, false
+	}
+	launch, ok := r.currentCodexLaunchContext(cwd)
+	if !ok || launch.Unreplayable {
+		return codexLaunchContext{}, false
+	}
+	return launch, true
+}
+
+func (r *Runner) warmCodexMCP(launch codexLaunchContext) {
+	if !r.mcpResolveOff && !r.mcpListOff && !launch.Unreplayable {
+		_ = r.codexMCPListEntries(launch)
+	}
+}
+
+func (r *Runner) codexMCPListEntries(launch codexLaunchContext) []mcpConfigEntry {
+	return r.cachedMCPListEntries(launch.cacheKey(), func() ([]mcpConfigEntry, bool) {
+		return runCodexMCPList(launch)
+	})
 }
 
 func cleanupMCPListCache(dir string, now time.Time) {
@@ -169,7 +219,7 @@ func runClaudeMCPList(launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
 	if err != nil {
 		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), claudeMCPListTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), mcpListProbeTimeout)
 	defer cancel()
 	args := append([]string(nil), launch.ReplayArgs...)
 	if launch.Bare {
@@ -185,4 +235,27 @@ func runClaudeMCPList(launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
 		return nil, false
 	}
 	return parseClaudeMCPList(string(out)), true
+}
+
+func runCodexMCPList(launch codexLaunchContext) ([]mcpConfigEntry, bool) {
+	bin := launch.Executable
+	if bin == "" || !filepath.IsAbs(bin) {
+		var err error
+		bin, err = exec.LookPath(bin)
+		if err != nil {
+			return nil, false
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mcpListProbeTimeout)
+	defer cancel()
+	args := append(launch.replayArgs(), "mcp", "list", "--json")
+	cmd := exec.CommandContext(ctx, bin, args...)
+	if launch.CWD != "" {
+		cmd.Dir = launch.CWD
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	return decodeCodexMCPList(out)
 }

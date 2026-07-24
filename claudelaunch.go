@@ -207,17 +207,21 @@ func (c claudeLaunchContext) cacheKey() string {
 			c.hashPluginDir(c.ReplayArgs[i+1], writeHashPart)
 		}
 	}
+	hashLaunchEnvironment(writeHashPart)
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+func hashLaunchEnvironment(writeHashPart func(string)) {
 	env := append([]string(nil), os.Environ()...)
 	sort.Strings(env)
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
 		switch name {
-		case "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_ENV_FILE", "PWD", "OLDPWD", "SHLVL", "_":
+		case "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_ENV_FILE", "CODEX_THREAD_ID", "CODEX_TURN_ID", "CODEX_PID", "PWD", "OLDPWD", "SHLVL", "_":
 			continue
 		}
 		writeHashPart(kv)
 	}
-	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 func (c claudeLaunchContext) hashPluginDir(value string, writeHashPart func(string)) {

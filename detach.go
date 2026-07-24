@@ -1,6 +1,9 @@
 package agenthooks
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +13,12 @@ import (
 )
 
 const claudeMCPWarmFlag = "--agenthooks-internal-claude-mcp-warm"
+
+const (
+	codexMCPWarmFlag       = "--agenthooks-internal-codex-mcp-warm"
+	codexLaunchContextFlag = "--agenthooks-internal-codex-launch-context"
+	maxLaunchContextBytes  = 1 << 20
+)
 
 // Self-backgrounding for providers that run every hook synchronously (Codex
 // parses-but-skips async, quirk #10). The rendered command for a telemetry
@@ -43,6 +52,69 @@ func claudeMCPWarmCWD(args []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func hasInternalFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeCodexLaunchContext(args []string, stdin io.Reader, launch codexLaunchContext) ([]string, io.Reader, error) {
+	payload, err := codexLaunchContextPayload(launch)
+	if err != nil {
+		return args, stdin, err
+	}
+	workerArgs := append([]string(nil), args...)
+	workerArgs = append(workerArgs, codexLaunchContextFlag)
+	return workerArgs, io.MultiReader(payload, stdin), nil
+}
+
+func encodeCodexMCPWarm(args []string, launch codexLaunchContext) ([]string, io.Reader, error) {
+	payload, err := codexLaunchContextPayload(launch)
+	if err != nil {
+		return args, nil, err
+	}
+	workerArgs := append([]string(nil), args...)
+	workerArgs = append(workerArgs, codexMCPWarmFlag)
+	return workerArgs, payload, nil
+}
+
+func codexLaunchContextPayload(launch codexLaunchContext) (io.Reader, error) {
+	data, err := json.Marshal(launch)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxLaunchContextBytes {
+		return nil, fmt.Errorf("codex launch context exceeds %d bytes", maxLaunchContextBytes)
+	}
+	return bytes.NewReader(append(data, '\n')), nil
+}
+
+func decodeCodexLaunchContext(stdin io.Reader) (codexLaunchContext, io.Reader, error) {
+	reader := bufio.NewReader(stdin)
+	var data []byte
+	for {
+		part, more, err := reader.ReadLine()
+		if err != nil {
+			return codexLaunchContext{}, reader, err
+		}
+		if len(data)+len(part) > maxLaunchContextBytes {
+			return codexLaunchContext{}, reader, fmt.Errorf("codex launch context exceeds %d bytes", maxLaunchContextBytes)
+		}
+		data = append(data, part...)
+		if !more {
+			break
+		}
+	}
+	var launch codexLaunchContext
+	if err := json.Unmarshal(data, &launch); err != nil {
+		return codexLaunchContext{}, reader, err
+	}
+	return launch, reader, nil
 }
 
 // detachSelf spawns this binary detached with the given args, streams stdin
@@ -84,7 +156,11 @@ func startDetachedSelf(args []string, stdin io.Reader) error {
 		return err
 	}
 	if stdin != nil {
-		if _, err := io.Copy(childStdin, io.LimitReader(stdin, maxPayloadBytes)); err != nil {
+		limit := int64(maxPayloadBytes)
+		if hasInternalFlag(args, codexLaunchContextFlag) || hasInternalFlag(args, codexMCPWarmFlag) {
+			limit += maxLaunchContextBytes + 1
+		}
+		if _, err := io.Copy(childStdin, io.LimitReader(stdin, limit)); err != nil {
 			_ = childStdin.Close()
 			_ = cmd.Process.Release()
 			return fmt.Errorf("forwarding payload: %w", err)

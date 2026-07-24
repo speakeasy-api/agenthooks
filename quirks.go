@@ -126,7 +126,7 @@ var quirkRegistry = []Quirk{
 		Mitigation: "generated config keeps per-hook argv distinct; PreviouslyContinued/LoopCount surface the native guard",
 		Reference:  "kimi code hooks docs"},
 	{ID: 25, Provider: "", Versions: "all", Event: KindToolPre,
-		Behavior:   "only Cursor MCP events carry server transport (url/command); every other provider ships the tool name alone",
+		Behavior:   "Cursor and Gemini MCP events carry server transport (url/command); other providers ship the tool name alone",
 		Mitigation: "runner resolves MCPCall.URL/Command from provider MCP configs (.mcp.json, ~/.claude.json, ~/.codex/config.toml, .cursor/mcp.json, .gemini/settings.json + extension manifests, .kimi-code/mcp.json, opencode.json(c)); ambiguous matches stay empty and FromConfig marks resolved transport",
 		Reference:  "provider MCP config formats"},
 	{ID: 26, Provider: ProviderClaudeCode, Versions: "all", Event: KindToolPre,

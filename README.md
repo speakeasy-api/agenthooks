@@ -138,7 +138,7 @@ Codex trust-hash pre-seeding.
   payload names (covering stdin-piped prompts), falling back to the agent
   process's own argv. Disable with `WithoutBackfill()`.
 - MCP tool calls carry the target server's transport: `MCPCall.URL`/`Command`
-  come from the payload on Cursor MCP events and are otherwise resolved from
+  come from Cursor and Gemini MCP payloads and are otherwise resolved from
   the provider's own MCP config files (`.mcp.json`, `~/.claude.json`,
   `~/.codex/config.toml`, `.cursor/mcp.json`, `.gemini/settings.json` plus
   extension manifests, `~/.kimi/mcp.json`). On Claude Code, servers absent

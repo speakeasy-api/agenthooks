@@ -431,6 +431,27 @@ func TestResolveMCPGeminiSplitRepair(t *testing.T) {
 	}
 }
 
+func TestResolveMCPGeminiPayloadContextWins(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".gemini", "settings.json"),
+		`{"mcpServers":{"my_srv":{"httpUrl":"https://wrong.example.com/mcp"}}}`)
+	raw := []byte(fmt.Sprintf(`{
+		"session_id":"s","cwd":%q,"hook_event_name":"BeforeTool","tool_name":"mcp_my_srv_do","tool_input":{},
+		"mcp_context":{"server_name":"my_srv","tool_name":"do","tcp":"localhost:9000"}
+	}`, cwd))
+	typed, err := decodeGemini(VariantUnknown, DetectionConfig, time.Now(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := typed.(*ToolPreEvent)
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "my_srv" || ev.Tool.MCP.Tool != "do" ||
+		ev.Tool.MCP.URL != "" || ev.Tool.MCP.Command != "" || ev.Tool.MCP.FromConfig {
+		t.Fatalf("payload MCP context was overwritten by config: %+v", ev.Tool.MCP)
+	}
+}
+
 func TestResolveMCPKimi(t *testing.T) {
 	home := isolateHome(t)
 	cwd := t.TempDir()

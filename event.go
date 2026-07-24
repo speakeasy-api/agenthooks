@@ -178,13 +178,13 @@ type ToolCall struct {
 }
 
 // MCPCall carries the decoded MCP tool identity plus the server's transport.
-// Only Cursor MCP events ship url/command in the hook payload; on every other
-// provider the runner resolves them from the provider's MCP config files
-// (quirk #25) and flags the result FromConfig.
+// Cursor and Gemini MCP events ship url/command in the hook payload; elsewhere
+// the runner resolves them from provider config (quirk #25) and flags the
+// result FromConfig.
 type MCPCall struct {
 	Server  string // decoded from mcp__s__t / mcp_s_t / MCP:t + context; "" if undecodable
 	Tool    string // tool name as the MCP server knows it
-	URL     string // remote transport: payload-borne (Cursor) or config-resolved
+	URL     string // remote transport: payload-borne or config-resolved
 	Command string // stdio transport: command plus args, space-joined
 	// FromConfig marks URL/Command as resolved from the provider's config
 	// files rather than carried by the event payload. Config-resolved

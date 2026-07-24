@@ -10,9 +10,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// MCP transport resolution (quirk #25). Only Cursor's beforeMCPExecution/
-// afterMCPExecution events carry the target server's url/command in the hook
-// payload; every other provider ships the tool name alone. To keep
+// MCP transport resolution (quirk #25). Cursor and Gemini carry the target
+// server's url/command in hook payloads; other providers ship the tool name
+// alone. To keep
 // MCPCall.URL/Command part of the tool-call contract everywhere, the runner
 // resolves them from the provider's own MCP config files, mirroring each
 // provider's name-sanitization and prefix-matching rules (several are
@@ -58,6 +58,11 @@ func (r *Runner) resolveMCP(typed any) {
 		return
 	}
 	if tc.MCP == nil || tc.MCP.URL != "" || tc.MCP.Command != "" {
+		return
+	}
+	// Gemini's mcp_context is authoritative even for transports (currently
+	// tcp) the unified URL/Command model cannot represent.
+	if base.Provider == ProviderGemini && len(rawField(base.Raw, "mcp_context")) > 0 {
 		return
 	}
 	var (

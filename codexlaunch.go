@@ -40,22 +40,24 @@ func parseCodexLaunchArgs(args []string, cwd string) codexLaunchContext {
 	ctx := codexLaunchContext{CWD: cwd}
 	if len(args) > 0 {
 		ctx.Executable = args[0]
+		args = args[1:]
 	}
-	for i := 1; i < len(args); i++ {
-		arg := args[i]
+	for len(args) > 0 {
+		arg := args[0]
+		args = args[1:]
 		if arg == "--" {
 			break
 		}
 		switch arg {
 		case "-c", "--config", "--enable", "--disable":
-			if i+1 < len(args) {
-				i++
-				ctx.Overrides = append(ctx.Overrides, canonicalCodexFlag(arg), args[i])
+			if len(args) > 0 {
+				ctx.Overrides = append(ctx.Overrides, canonicalCodexFlag(arg), args[0])
+				args = args[1:]
 			}
 		case "-p", "--profile":
-			if i+1 < len(args) {
-				i++
-				ctx.Profile = args[i]
+			if len(args) > 0 {
+				ctx.Profile = args[0]
+				args = args[1:]
 			}
 		case "--ignore-user-config":
 			ctx.Unreplayable = true

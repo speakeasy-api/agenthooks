@@ -172,6 +172,38 @@ func TestDecodeGeminiTimestampAndError(t *testing.T) {
 	}
 }
 
+func TestDecodeGeminiMCPContext(t *testing.T) {
+	preRaw := []byte(`{
+		"session_id":"s","cwd":"/work","hook_event_name":"BeforeTool",
+		"tool_name":"mcp_wrong_split","tool_call_id":"c1","tool_input":{},
+		"mcp_context":{"server_name":"my_srv","tool_name":"do","command":"npx","args":["-y","@acme/mcp"],"cwd":"/server"}
+	}`)
+	typed, err := decodeGemini(VariantUnknown, DetectionConfig, testNow, preRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := typed.(*ToolPreEvent)
+	if pre.Tool.Canonical != ToolMCP || pre.Tool.MCP == nil || pre.Tool.MCP.Server != "my_srv" ||
+		pre.Tool.MCP.Tool != "do" || pre.Tool.MCP.Command != "npx -y @acme/mcp" || pre.Tool.MCP.FromConfig {
+		t.Fatalf("Gemini stdio MCP context = %+v", pre.Tool)
+	}
+
+	postRaw := []byte(`{
+		"session_id":"s","cwd":"/work","hook_event_name":"AfterTool",
+		"tool_name":"mcp_outer_name","tool_call_id":"c2","tool_input":{},"tool_response":{},
+		"mcp_context":{"server_name":"remote_srv","tool_name":"find","url":"https://payload.example.com/mcp"}
+	}`)
+	typed, err = decodeGemini(VariantUnknown, DetectionConfig, testNow, postRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := typed.(*ToolPostEvent)
+	if post.Tool.MCP == nil || post.Tool.MCP.Server != "remote_srv" || post.Tool.MCP.Tool != "find" ||
+		post.Tool.MCP.URL != "https://payload.example.com/mcp" || post.Tool.MCP.FromConfig {
+		t.Fatalf("Gemini remote MCP context = %+v", post.Tool)
+	}
+}
+
 func TestDecodeOpenCodeFrames(t *testing.T) {
 	typed, err := decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/tool_execute_before.json"))
 	if err != nil {

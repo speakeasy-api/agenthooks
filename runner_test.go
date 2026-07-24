@@ -183,6 +183,9 @@ func TestCursorDedup(t *testing.T) {
 	r := quietRunner(WithDedupDir(t.TempDir()))
 	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
 		calls++
+		if e.NativeName == "beforeMCPExecution" && (e.Tool.MCP == nil || e.Tool.MCP.Server != "srv") {
+			t.Errorf("specific MCP server identity = %+v", e.Tool.MCP)
+		}
 		return Deny("stop"), nil
 	})
 	args := []string{"agenthooks", "run", "--provider=cursor"}

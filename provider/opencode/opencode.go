@@ -30,15 +30,25 @@ type Reply struct {
 	Error  string         `json:"error,omitempty"`
 }
 
-// InitializeInput is the startup frame payload carrying OpenCode server info
-// for the optional HTTP client (permission replies via
-// POST /session/:id/permissions/:permissionID, context injection via
-// session.prompt with noReply).
+// InitializeInput is the shim's lazy initialization payload carrying OpenCode
+// server info and its resolved MCP inventory for the optional HTTP client
+// (permission replies via POST /session/:id/permissions/:permissionID,
+// context injection via session.prompt with noReply).
 type InitializeInput struct {
 	ServerURL string                     `json:"serverUrl"`
 	Directory string                     `json:"directory"`
 	Worktree  string                     `json:"worktree"`
+	MCP       map[string]MCPServerConfig `json:"mcp"`
 	Extra     map[string]json.RawMessage `json:"-"`
+}
+
+// MCPServerConfig is the sanitized active MCP inventory sent by the shim.
+type MCPServerConfig struct {
+	Type    string                     `json:"type"`
+	Command []string                   `json:"command"`
+	URL     string                     `json:"url"`
+	Enabled *bool                      `json:"enabled"`
+	Extra   map[string]json.RawMessage `json:"-"`
 }
 
 // ToolExecuteBeforeInput is the input half of tool.execute.before.

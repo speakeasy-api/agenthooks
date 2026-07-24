@@ -11,6 +11,18 @@ import (
 	"github.com/speakeasy-api/agenthooks/internal/jsonx"
 )
 
+// MCPToolContext is the exact MCP identity and non-sensitive transport
+// metadata Gemini includes on BeforeTool and AfterTool payloads.
+type MCPToolContext struct {
+	ServerName string   `json:"server_name"`
+	ToolName   string   `json:"tool_name"`
+	Command    string   `json:"command"`
+	Args       []string `json:"args"`
+	CWD        string   `json:"cwd"`
+	URL        string   `json:"url"`
+	TCP        string   `json:"tcp"`
+}
+
 // BeforeToolInput is the native BeforeTool payload.
 type BeforeToolInput struct {
 	SessionID     string                     `json:"session_id"`
@@ -20,6 +32,7 @@ type BeforeToolInput struct {
 	ToolName      string                     `json:"tool_name"`
 	ToolInput     json.RawMessage            `json:"tool_input"`
 	ToolCallID    string                     `json:"tool_call_id"`
+	MCPContext    *MCPToolContext            `json:"mcp_context"`
 	Extra         map[string]json.RawMessage `json:"-"`
 }
 
@@ -34,6 +47,7 @@ type AfterToolInput struct {
 	ToolInput     json.RawMessage            `json:"tool_input"`
 	ToolCallID    string                     `json:"tool_call_id"`
 	ToolResponse  json.RawMessage            `json:"tool_response"`
+	MCPContext    *MCPToolContext            `json:"mcp_context"`
 	Extra         map[string]json.RawMessage `json:"-"`
 }
 

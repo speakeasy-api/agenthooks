@@ -28,21 +28,32 @@ var geminiKinds = map[string]EventKind{
 }
 
 type geminiIn struct {
-	SessionID      string          `json:"session_id"`
-	TranscriptPath string          `json:"transcript_path"`
-	CWD            string          `json:"cwd"`
-	HookEventName  string          `json:"hook_event_name"`
-	Timestamp      string          `json:"timestamp"`
-	Model          string          `json:"model"`
-	ToolName       string          `json:"tool_name"`
-	ToolInput      json.RawMessage `json:"tool_input"`
-	ToolCallID     string          `json:"tool_call_id"`
-	ToolResponse   json.RawMessage `json:"tool_response"`
-	Prompt         string          `json:"prompt"`
-	Message        string          `json:"message"`
-	Source         string          `json:"source"`
-	Reason         string          `json:"reason"`
-	Trigger        string          `json:"trigger"`
+	SessionID      string            `json:"session_id"`
+	TranscriptPath string            `json:"transcript_path"`
+	CWD            string            `json:"cwd"`
+	HookEventName  string            `json:"hook_event_name"`
+	Timestamp      string            `json:"timestamp"`
+	Model          string            `json:"model"`
+	ToolName       string            `json:"tool_name"`
+	ToolInput      json.RawMessage   `json:"tool_input"`
+	ToolCallID     string            `json:"tool_call_id"`
+	ToolResponse   json.RawMessage   `json:"tool_response"`
+	Prompt         string            `json:"prompt"`
+	Message        string            `json:"message"`
+	Source         string            `json:"source"`
+	Reason         string            `json:"reason"`
+	Trigger        string            `json:"trigger"`
+	MCPContext     *geminiMCPContext `json:"mcp_context"`
+}
+
+type geminiMCPContext struct {
+	ServerName string   `json:"server_name"`
+	ToolName   string   `json:"tool_name"`
+	Command    string   `json:"command"`
+	Args       []string `json:"args"`
+	CWD        string   `json:"cwd"`
+	URL        string   `json:"url"`
+	TCP        string   `json:"tcp"`
 }
 
 func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
@@ -79,7 +90,7 @@ func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []
 
 	switch kind {
 	case KindToolPre:
-		return &ToolPreEvent{Event: base, Tool: makeToolCall(base.Session, in.ToolName, in.ToolCallID, in.ToolInput, in.ToolInput)}, nil
+		return &ToolPreEvent{Event: base, Tool: geminiToolCall(base.Session, &in)}, nil
 	case KindToolPost:
 		// Gemini reports tool failures via tool_response.error rather than a
 		// dedicated event (§4.1); surface both on the same typed event.
@@ -94,7 +105,7 @@ func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []
 		}
 		return &ToolPostEvent{
 			Event:  base,
-			Tool:   makeToolCall(base.Session, in.ToolName, in.ToolCallID, in.ToolInput, in.ToolInput),
+			Tool:   geminiToolCall(base.Session, &in),
 			Output: in.ToolResponse,
 			Failed: errMsg != "",
 			Error:  errMsg,
@@ -116,6 +127,21 @@ func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []
 	}
 	ev := base
 	return &ev, nil
+}
+
+func geminiToolCall(session SessionInfo, in *geminiIn) ToolCall {
+	tc := makeToolCall(session, in.ToolName, in.ToolCallID, in.ToolInput, in.ToolInput)
+	if in.MCPContext == nil {
+		return tc
+	}
+	tc.Canonical = ToolMCP
+	tc.MCP = &MCPCall{
+		Server:  in.MCPContext.ServerName,
+		Tool:    in.MCPContext.ToolName,
+		URL:     in.MCPContext.URL,
+		Command: joinCommand(in.MCPContext.Command, in.MCPContext.Args),
+	}
+	return tc
 }
 
 func encodeGemini(typed any, base *Event, d decisionCore) (wireResponse, error) {

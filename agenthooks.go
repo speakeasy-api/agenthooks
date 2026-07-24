@@ -38,16 +38,19 @@ const maxPayloadBytes = 32 << 20
 // kind; OnAny is additive (observe-only) and runs regardless. Typed handlers
 // gate/mutate; OnAny never does.
 type Runner struct {
-	policy        PolicyFunc
-	logger        *slog.Logger
-	now           func() time.Time
-	dedupDir      string
-	dedupOff      bool
-	mcpResolveOff bool
-	mcpListOff    bool
-	backfillOff   bool
-	anyHandlers   []func(context.Context, *Event) error
-	otherByName   map[string][]func(context.Context, *Event) error
+	policy             PolicyFunc
+	logger             *slog.Logger
+	now                func() time.Time
+	dedupDir           string
+	dedupOff           bool
+	mcpResolveOff      bool
+	mcpListOff         bool
+	mcpWarmStart       func(string)
+	codexLaunchContext *codexLaunchContext
+	codexMCPWarmStart  func(codexLaunchContext)
+	backfillOff        bool
+	anyHandlers        []func(context.Context, *Event) error
+	otherByName        map[string][]func(context.Context, *Event) error
 
 	hSessionStart  func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    func(context.Context, *SessionEndEvent) error
@@ -86,15 +89,16 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithDedupDir relocates the on-disk cross-process state: the dedup markers
-// used for Cursor's duplicate tool events (quirk #2), the per-session
-// `claude mcp list` cache (quirk #26), and the prompt-backfill markers
-// (quirks #30, #31). Default: os.TempDir().
+// used for Cursor's duplicate tool events (quirk #2), launch-context MCP
+// inventory caches (quirks #26, #32), and the prompt-backfill markers
+// (quirks #30, #31). Without this option, MCP inventories use os.UserCacheDir
+// when available; other state uses os.TempDir.
 func WithDedupDir(dir string) Option {
 	return func(r *Runner) { r.dedupDir = dir }
 }
 
-// stateDir roots the best-effort cross-process state files (dedup markers,
-// per-session MCP inventory cache).
+// stateDir roots the best-effort cross-process state files (dedup markers and
+// short-lived MCP inventory snapshots).
 func (r *Runner) stateDir() string {
 	if r.dedupDir != "" {
 		return r.dedupDir
@@ -114,10 +118,9 @@ func WithoutMCPResolution() Option {
 	return func(r *Runner) { r.mcpResolveOff = true }
 }
 
-// WithoutMCPListFallback disables only the once-per-session `claude mcp list`
-// probe used to attribute MCP servers that appear in no config file (plugin
-// and claude.ai connectors, quirk #26). Config-file resolution (quirk #25)
-// stays active.
+// WithoutMCPListFallback disables provider CLI inventory probes (`claude mcp
+// list`, `codex mcp list --json`). Direct config-file resolution stays active;
+// launch overrides that cannot be safely reproduced stay unattributed.
 func WithoutMCPListFallback() Option {
 	return func(r *Runner) { r.mcpListOff = true }
 }
@@ -201,14 +204,63 @@ func (r *Runner) OnOther(nativeName string, fn func(context.Context, *Event) err
 // the normal path without the flag. Detaching is process management, so it
 // lives here rather than in the testable Run.
 func Main(r *Runner) {
+	stdin := io.Reader(os.Stdin)
+	if cwd, ok := claudeMCPWarmCWD(os.Args[1:]); ok {
+		r.warmClaudeMCP(cwd)
+		os.Exit(0)
+	}
+	if hasInternalFlag(os.Args[1:], codexMCPWarmFlag) {
+		launch, _, err := decodeCodexLaunchContext(stdin)
+		if err != nil {
+			r.logger.Warn("agenthooks: decoding Codex MCP warm context", "error", err)
+		} else {
+			r.warmCodexMCP(launch)
+		}
+		os.Exit(0)
+	}
+	if hasInternalFlag(os.Args[1:], codexLaunchContextFlag) {
+		launch, remaining, err := decodeCodexLaunchContext(stdin)
+		stdin = remaining
+		if err != nil {
+			r.logger.Warn("agenthooks: decoding Codex launch context", "error", err)
+		} else {
+			r.codexLaunchContext = &launch
+		}
+	}
 	if rest, ok := stripAsyncFlag(os.Args[1:]); ok {
-		os.Exit(detachSelf(rest, os.Stdin, os.Stderr))
+		workerArgs, workerStdin := rest, stdin
+		if inv, err := parseArgs(rest); err == nil && inv.provider == ProviderCodex {
+			if launch, recovered := r.currentCodexLaunchContext(""); recovered {
+				if args, input, err := encodeCodexLaunchContext(rest, stdin, launch); err == nil {
+					workerArgs, workerStdin = args, input
+				}
+			}
+		}
+		os.Exit(detachSelf(workerArgs, workerStdin, os.Stderr))
+	}
+	mainArgs := append([]string(nil), os.Args[1:]...)
+	r.mcpWarmStart = func(cwd string) {
+		args := append([]string(nil), mainArgs...)
+		args = append(args, claudeMCPWarmFlag+"="+cwd)
+		if err := startDetachedSelf(args, nil); err != nil {
+			r.logger.Warn("agenthooks: starting Claude MCP inventory warm", "error", err)
+		}
+	}
+	r.codexMCPWarmStart = func(launch codexLaunchContext) {
+		args, input, err := encodeCodexMCPWarm(mainArgs, launch)
+		if err != nil {
+			r.logger.Warn("agenthooks: encoding Codex MCP inventory warm", "error", err)
+			return
+		}
+		if err := startDetachedSelf(args, input); err != nil {
+			r.logger.Warn("agenthooks: starting Codex MCP inventory warm", "error", err)
+		}
 	}
 	realStdout := os.Stdout
 	if sink, err := logSink(); err == nil {
 		os.Stdout = sink
 	}
-	os.Exit(r.Run(context.Background(), os.Args[1:], os.Stdin, realStdout, os.Stderr))
+	os.Exit(r.Run(context.Background(), os.Args[1:], stdin, realStdout, os.Stderr))
 }
 
 // Run is the testable core of Main: explicit streams, returns the exit code.
@@ -261,6 +313,18 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind), "tool", tool.Name, "session", base.Session.ID, "turn", base.Session.TurnID)
 	} else {
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind))
+	}
+
+	// Start the launch-context inventory probe without delaying SessionStart.
+	// A first MCP event arriving before it finishes waits on the same cache
+	// lock and consumes the worker's snapshot.
+	if provider == ProviderClaudeCode && base.Kind == KindSessionStart && r.mcpWarmStart != nil && r.shouldWarmClaudeMCP(base.Session.CWD) {
+		r.mcpWarmStart(base.Session.CWD)
+	}
+	if provider == ProviderCodex && base.Kind == KindSessionStart && r.codexMCPWarmStart != nil {
+		if launch, ok := r.codexMCPWarmContext(base.Session.CWD); ok {
+			r.codexMCPWarmStart(launch)
+		}
 	}
 
 	// Attach MCP transport before the matcher filter runs: resolution can

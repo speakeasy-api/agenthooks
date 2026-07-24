@@ -47,6 +47,7 @@ type cursorIn struct {
 	ToolUseID        string          `json:"tool_use_id"`
 	Command          string          `json:"command"`
 	URL              string          `json:"url"`
+	MCPServerName    string          `json:"mcp_server_name"`
 	Prompt           string          `json:"prompt"`
 	FilePath         string          `json:"file_path"`
 	Output           json.RawMessage `json:"output"`
@@ -191,6 +192,7 @@ func cursorToolCall(s SessionInfo, in *cursorIn) ToolCall {
 		}
 		tc.MCP.URL = in.URL
 		tc.MCP.Command = in.Command
+		tc.MCP.Server = in.MCPServerName
 	}
 	return tc
 }

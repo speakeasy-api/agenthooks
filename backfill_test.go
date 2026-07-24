@@ -304,8 +304,8 @@ func TestCursorPromptFromArgs(t *testing.T) {
 // ancestry must be readable on this platform (go test is a child of the Go
 // tool at minimum).
 func TestFindAncestorArgs(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		t.Skip("ancestor argv recovery is linux/darwin only (promptargv_other.go)")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("ancestor argv recovery is unsupported on this platform")
 	}
 	args, err := procArgs(os.Getpid())
 	if err != nil {

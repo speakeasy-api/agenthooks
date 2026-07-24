@@ -16,12 +16,22 @@ func procArgs(pid int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	fields := bytes.Split(bytes.TrimRight(data, "\x00"), []byte{0})
+	if len(data) == 0 {
+		return nil, fmt.Errorf("agenthooks: empty cmdline for pid %d", pid)
+	}
+	if data[len(data)-1] == 0 {
+		data = data[:len(data)-1]
+	}
+	fields := bytes.Split(data, []byte{0})
 	args := make([]string, 0, len(fields))
 	for _, f := range fields {
 		args = append(args, string(f))
 	}
 	return args, nil
+}
+
+func procExecutable(pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 }
 
 // procPPID reads the parent pid from /proc/<pid>/stat. The comm field may

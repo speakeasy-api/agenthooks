@@ -78,14 +78,35 @@ export const AgentHooks = async (ctx: any) => {
     }
   }
 
-  await call("initialize", {
-    serverUrl: ctx?.serverUrl ?? ctx?.client?.baseUrl ?? "",
-    directory: ctx?.directory ?? "",
-    worktree: ctx?.worktree ?? "",
-  }, null)
+  let initialized: Promise<void> | undefined
+  const initialize = () => initialized ??= (async () => {
+    let mcp: Record<string, unknown> | undefined
+    try {
+      const config: any = (await ctx.client.config.get())?.data
+      if (config) {
+        mcp = {}
+        for (const [name, server] of Object.entries(config.mcp ?? {}) as [string, any][]) {
+          mcp[name] = {
+            type: server?.type,
+            command: server?.command,
+            url: server?.url,
+            enabled: server?.enabled,
+          }
+        }
+      }
+    } catch {}
+    await call("initialize", {
+      serverUrl: ctx?.serverUrl ?? ctx?.client?.baseUrl ?? "",
+      directory: ctx?.directory ?? "",
+      worktree: ctx?.worktree ?? "",
+      ...(mcp === undefined ? {} : { mcp }),
+    }, null)
+  })()
 
-  const forward = (hook: string) => async (input: unknown, output: unknown) =>
+  const forward = (hook: string) => async (input: unknown, output: unknown) => {
+    await initialize()
     apply(output, await call(hook, input, output))
+  }
 
   return {
     "chat.message": forward("chat.message"),
@@ -102,6 +123,7 @@ export const AgentHooks = async (ctx: any) => {
         if (failedCalls.has(part.callID)) return
         failedCalls.add(part.callID)
       }
+      const ready = initialize()
       // No native hook or bus event carries the completed assistant text, so
       // splice the transcript's final assistant message into the stop event
       // the way Claude/Codex report last_assistant_message.
@@ -121,6 +143,7 @@ export const AgentHooks = async (ctx: any) => {
           }
         } catch {}
       }
+      await ready
       apply(null, await call(event?.type ?? "event", input, null))
     },
     dispose: () => {

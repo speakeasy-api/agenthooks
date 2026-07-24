@@ -387,4 +387,16 @@ func TestRenderOpenCodeShim(t *testing.T) {
 	if !strings.Contains(shim, `"agenthooks", "serve", "--provider=opencode"`) {
 		t.Error("shim must spawn serve mode")
 	}
+	for _, want := range []string{
+		"ctx.client.config.get()", "?.data", "mcp === undefined",
+		"type: server?.type", "command: server?.command", "url: server?.url", "enabled: server?.enabled",
+		"await initialize()",
+	} {
+		if !strings.Contains(shim, want) {
+			t.Errorf("shim must carry resolved MCP config via %q", want)
+		}
+	}
+	if strings.Contains(shim, "server?.headers") || strings.Contains(shim, "server?.environment") {
+		t.Error("shim must not forward MCP credentials")
+	}
 }

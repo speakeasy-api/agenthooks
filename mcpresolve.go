@@ -45,6 +45,10 @@ type mcpConfigEntry struct {
 // detection itself: <server>_<tool> names carry no reserved marker, so only
 // a config match can tell an MCP call apart from a native tool (quirk #28).
 func (r *Runner) resolveMCP(typed any) {
+	r.resolveMCPWithOpenCodeInventory(typed, nil)
+}
+
+func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConfigEntry) {
 	if r.mcpResolveOff {
 		return
 	}
@@ -54,7 +58,11 @@ func (r *Runner) resolveMCP(typed any) {
 	}
 	base := eventOf(typed)
 	if base.Provider == ProviderOpenCode {
-		r.resolveOpenCodeMCP(base, tc)
+		if inventory == nil {
+			entries := loadMCPConfigEntries(ProviderOpenCode, base.Session.CWD)
+			inventory = &entries
+		}
+		r.resolveOpenCodeMCP(tc, *inventory)
 		return
 	}
 	if tc.MCP == nil || tc.MCP.URL != "" || tc.MCP.Command != "" {
@@ -158,11 +166,10 @@ func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, s
 // (verified against opencode 1.17.8) and no reserved prefix, so the codec
 // cannot classify them; a configured-name match both detects the call and
 // attaches transport.
-func (r *Runner) resolveOpenCodeMCP(base *Event, tc *ToolCall) {
+func (r *Runner) resolveOpenCodeMCP(tc *ToolCall, entries []mcpConfigEntry) {
 	if tc.MCP != nil && (tc.MCP.URL != "" || tc.MCP.Command != "") {
 		return
 	}
-	entries := loadMCPConfigEntries(ProviderOpenCode, base.Session.CWD)
 	matched, server, tool := matchSanitizedPrefix(entries, tc.Name, "", "_", verbatimMCPName)
 	if matched == nil {
 		return
@@ -461,14 +468,18 @@ func readOpenCodeConfig(path string) []mcpConfigEntry {
 	if err := json.Unmarshal(stripJSONCComments(data), &doc); err != nil {
 		return nil
 	}
-	names := make([]string, 0, len(doc.MCP))
-	for n := range doc.MCP {
+	return openCodeMCPEntries(doc.MCP)
+}
+
+func openCodeMCPEntries(servers map[string]opencodeMCPJSON) []mcpConfigEntry {
+	names := make([]string, 0, len(servers))
+	for n := range servers {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	out := make([]mcpConfigEntry, 0, len(names))
 	for _, n := range names {
-		s := doc.MCP[n]
+		s := servers[n]
 		if s.Enabled != nil && !*s.Enabled {
 			continue
 		}

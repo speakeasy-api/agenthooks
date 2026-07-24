@@ -38,7 +38,17 @@ type InitializeInput struct {
 	ServerURL string                     `json:"serverUrl"`
 	Directory string                     `json:"directory"`
 	Worktree  string                     `json:"worktree"`
+	MCP       map[string]MCPServerConfig `json:"mcp"`
 	Extra     map[string]json.RawMessage `json:"-"`
+}
+
+// MCPServerConfig is the sanitized active MCP inventory sent by the shim.
+type MCPServerConfig struct {
+	Type    string                     `json:"type"`
+	Command []string                   `json:"command"`
+	URL     string                     `json:"url"`
+	Enabled *bool                      `json:"enabled"`
+	Extra   map[string]json.RawMessage `json:"-"`
 }
 
 // ToolExecuteBeforeInput is the input half of tool.execute.before.

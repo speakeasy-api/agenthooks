@@ -30,6 +30,8 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 		ServerURL string `json:"serverUrl"`
 		Directory string `json:"directory"`
 		Worktree  string `json:"worktree"`
+		MCP       []mcpConfigEntry
+		MCPExact  bool
 	}
 
 	for sc.Scan() {
@@ -45,7 +47,22 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 		// The startup frame delivers serverUrl/directory/worktree for the
 		// optional HTTP client (permission replies, context injection).
 		if fr.Hook == "initialize" {
-			_ = json.Unmarshal(fr.Input, &serverInfo)
+			var info struct {
+				ServerURL string                      `json:"serverUrl"`
+				Directory string                      `json:"directory"`
+				Worktree  string                      `json:"worktree"`
+				MCP       *map[string]opencodeMCPJSON `json:"mcp"`
+			}
+			if json.Unmarshal(fr.Input, &info) == nil {
+				serverInfo.ServerURL = info.ServerURL
+				serverInfo.Directory = info.Directory
+				serverInfo.Worktree = info.Worktree
+				serverInfo.MCPExact = info.MCP != nil
+				serverInfo.MCP = nil
+				if info.MCP != nil {
+					serverInfo.MCP = openCodeMCPEntries(*info.MCP)
+				}
+			}
 			_ = enc.Encode(opencodeReply{Seq: fr.Seq})
 			continue
 		}
@@ -63,7 +80,11 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 			base.Session.CWD = serverInfo.Directory
 			base.Session.WorkspaceRoots = rootsFor(serverInfo.Directory)
 		}
-		r.resolveMCP(typed)
+		if serverInfo.MCPExact {
+			r.resolveMCPWithOpenCodeInventory(typed, &serverInfo.MCP)
+		} else {
+			r.resolveMCP(typed)
+		}
 		pol := r.policy(base)
 		deadline := pol.Timeout
 		if deadline == 0 {

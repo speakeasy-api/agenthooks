@@ -141,9 +141,11 @@ Codex trust-hash pre-seeding.
   come from Cursor and Gemini MCP payloads and are otherwise resolved from
   the provider's own MCP config files (`.mcp.json`, `~/.claude.json`,
   `~/.codex/config.toml`, `.cursor/mcp.json`, `.gemini/settings.json` plus
-  extension manifests, `~/.kimi/mcp.json`). On Claude Code, servers absent
-  from config files
-  (plugins, claude.ai connectors) are attributed via `claude mcp list`, started
+  extension manifests, `~/.kimi/mcp.json`, `opencode.json(c)`). OpenCode's
+  shim uses the running server's resolved inventory, including custom, inline,
+  remote, and managed configuration. On Claude Code, servers absent from
+  config files (plugins, claude.ai connectors) are attributed via
+  `claude mcp list`, started
   as a detached `SessionStart` warm in the launching process's project and
   configuration context. The first MCP hook waits for that same context's
   in-flight snapshot only when discovery has not finished. On Claude Code

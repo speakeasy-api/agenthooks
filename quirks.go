@@ -139,7 +139,7 @@ var quirkRegistry = []Quirk{
 		Reference:  "gemini-cli extensions docs"},
 	{ID: 28, Provider: ProviderOpenCode, Versions: "all", Event: KindToolPre,
 		Behavior:   "MCP tools are registered as <server>_<tool> with the configured name verbatim and no reserved prefix, so MCP calls are indistinguishable from native tools by name alone",
-		Mitigation: "resolver matches configured server names from opencode.json(c) against tool names — a match detects the MCP call (sets MCPCall, Canonical=mcp) and attaches transport in one step",
+		Mitigation: "the shim fetches the running server's resolved MCP inventory on the first runtime hook; matching its configured names simultaneously detects MCP calls and attaches transport",
 		Reference:  "opencode mcp docs; verified against opencode 1.17.8"},
 	{ID: 29, Provider: ProviderCursor, Versions: "verified 2026.07.01", Event: KindOther,
 		Behavior:   "a scheme:// URL anywhere in any hook command makes Cursor silently drop the ENTIRE hooks.json — no hook in the file fires and nothing is logged; a bare host:port value is accepted",

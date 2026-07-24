@@ -534,6 +534,41 @@ url = "https://disk.example.com/mcp"
 	}
 }
 
+func TestResolveMCPCodexFailedProbeFallsBackToDirectConfig(t *testing.T) {
+	home := isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.direct]
+url = "https://direct.example.com/mcp"
+`)
+	launch := parseCodexLaunchArgs([]string{"codex"}, project)
+	launch.Executable = filepath.Join(project, "missing-codex")
+	r := mcpTestRunner(t)
+	r.codexLaunchContext = &launch
+	ev := mcpToolPre(ProviderCodex, project, "mcp__direct__run")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://direct.example.com/mcp" || !ev.Tool.MCP.FromConfig {
+		t.Fatalf("Codex direct fallback = %+v", ev.Tool.MCP)
+	}
+}
+
+func TestResolveMCPCodexSuccessfulEmptyInventoryStaysUnknown(t *testing.T) {
+	home := isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.direct]
+url = "https://direct.example.com/mcp"
+`)
+	installFakeCodex(t, `[]`)
+	launch := parseCodexLaunchArgs([]string{"codex"}, project)
+	launch.Executable = ""
+	r := mcpTestRunner(t)
+	r.codexLaunchContext = &launch
+	ev := mcpToolPre(ProviderCodex, project, "mcp__direct__run")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP.URL != "" || ev.Tool.MCP.Command != "" || ev.Tool.MCP.FromConfig {
+		t.Fatalf("successful empty Codex inventory fell back to disk: %+v", ev.Tool.MCP)
+	}
+}
+
 func TestResolveMCPCodexUnreplayableLaunchStaysUnknown(t *testing.T) {
 	home := isolateHome(t)
 	project := t.TempDir()

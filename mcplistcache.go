@@ -17,8 +17,9 @@ const (
 )
 
 type mcpListCache struct {
-	CheckedAt int64            `json:"checked_at"`
-	Entries   []mcpConfigEntry `json:"entries"`
+	CheckedAt   int64            `json:"checked_at"`
+	Entries     []mcpConfigEntry `json:"entries"`
+	HasSnapshot bool             `json:"has_snapshot,omitempty"`
 }
 
 func (r *Runner) claudeMCPWarmContext(cwd string) (claudeLaunchContext, bool) {
@@ -44,23 +45,24 @@ func (r *Runner) warmClaudeMCP(cwd string) {
 }
 
 func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
-	return r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+	entries, _ := r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
 		return runClaudeMCPList(ctx, launch)
 	})
+	return entries
 }
 
-func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([]mcpConfigEntry, bool)) []mcpConfigEntry {
+func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([]mcpConfigEntry, bool)) ([]mcpConfigEntry, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), mcpListWaitTimeout)
 	defer cancel()
 	dir := r.mcpListCacheDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil
+		return nil, false
 	}
 	path := filepath.Join(dir, key+".json")
 	now := r.mcpListNow()
 	cached := readMCPListCache(path)
 	if mcpListCacheFresh(cached, now) {
-		return cached.Entries
+		return cached.Entries, cached.HasSnapshot
 	}
 	cleanupMCPListCache(dir, time.Now())
 
@@ -73,25 +75,25 @@ func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([
 		release, ok, lockErr := tryMCPListLock(path + ".lock")
 		if lockErr != nil {
 			if cached.CheckedAt != 0 {
-				return cached.Entries
+				return cached.Entries, cached.HasSnapshot
 			}
 			if entries, success := probe(ctx); success {
-				return entries
+				return entries, true
 			}
-			return nil
+			return nil, false
 		}
 		if ok {
 			unlock = release
 			break
 		}
 		if latest := readMCPListCache(path); mcpListCacheFresh(latest, r.mcpListNow()) {
-			return latest.Entries
+			return latest.Entries, latest.HasSnapshot
 		}
 		if !time.Now().Before(deadline) {
 			if latest := readMCPListCache(path); latest.CheckedAt > cached.CheckedAt {
-				return latest.Entries
+				return latest.Entries, latest.HasSnapshot
 			}
-			return cached.Entries
+			return cached.Entries, cached.HasSnapshot
 		}
 		time.Sleep(backoff)
 		backoff = min(2*backoff, 250*time.Millisecond)
@@ -103,14 +105,15 @@ func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([
 	cached = readMCPListCache(path)
 	now = r.mcpListNow()
 	if mcpListCacheFresh(cached, now) {
-		return cached.Entries
+		return cached.Entries, cached.HasSnapshot
 	}
 	if entries, success := probe(ctx); success {
 		cached.Entries = entries // successful probes replace, so removals stick
+		cached.HasSnapshot = true
 	}
 	cached.CheckedAt = now.Unix()
 	writeMCPListCache(path, cached)
-	return cached.Entries
+	return cached.Entries, cached.HasSnapshot
 }
 
 func (r *Runner) mcpListCacheDir() string {
@@ -147,11 +150,11 @@ func (r *Runner) codexMCPWarmContext(cwd string) (codexLaunchContext, bool) {
 
 func (r *Runner) warmCodexMCP(launch codexLaunchContext) {
 	if !r.mcpResolveOff && !r.mcpListOff && !launch.Unreplayable {
-		_ = r.codexMCPListEntries(launch)
+		_, _ = r.codexMCPListEntries(launch)
 	}
 }
 
-func (r *Runner) codexMCPListEntries(launch codexLaunchContext) []mcpConfigEntry {
+func (r *Runner) codexMCPListEntries(launch codexLaunchContext) ([]mcpConfigEntry, bool) {
 	return r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
 		return runCodexMCPList(ctx, launch)
 	})

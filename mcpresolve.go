@@ -131,7 +131,10 @@ func (r *Runner) resolveCodexMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, st
 		return nil, "", ""
 	}
 	if recovered && !r.mcpListOff {
-		return matchSanitizedPrefix(r.codexMCPListEntries(launch), tc.Name, "mcp__", "__", codexSanitizeMCPName)
+		entries, authoritative := r.codexMCPListEntries(launch)
+		if matched, server, tool := matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName); matched != nil || authoritative {
+			return matched, server, tool
+		}
 	}
 	if recovered && launch.hasOverrides() {
 		return nil, "", ""

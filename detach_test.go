@@ -16,6 +16,16 @@ func TestStripAsyncFlag(t *testing.T) {
 	}
 }
 
+func TestClaudeMCPWarmCWD(t *testing.T) {
+	cwd, ok := claudeMCPWarmCWD([]string{"agenthooks", "run", claudeMCPWarmFlag + "=/work/project"})
+	if !ok || cwd != "/work/project" {
+		t.Fatalf("warm cwd = %q, %v", cwd, ok)
+	}
+	if _, ok := claudeMCPWarmCWD([]string{"agenthooks", "run"}); ok {
+		t.Fatal("ordinary invocation detected as MCP warm worker")
+	}
+}
+
 // The runner itself must tolerate --async unseen (an old library driven by a
 // newer generated config runs the hook synchronously instead of erroring).
 func TestParseArgsToleratesAsync(t *testing.T) {

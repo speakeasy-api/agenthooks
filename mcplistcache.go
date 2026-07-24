@@ -11,6 +11,7 @@ import (
 
 const (
 	claudeMCPListTimeout   = 15 * time.Second
+	mcpListWaitTimeout     = claudeMCPListTimeout + time.Second
 	mcpListRefreshInterval = 5 * time.Minute
 	mcpListCacheRetention  = 24 * time.Hour
 )
@@ -18,6 +19,28 @@ const (
 type mcpListCache struct {
 	CheckedAt int64            `json:"checked_at"`
 	Entries   []mcpConfigEntry `json:"entries"`
+}
+
+func (r *Runner) claudeMCPWarmContext(cwd string) (claudeLaunchContext, bool) {
+	if r.mcpResolveOff || r.mcpListOff {
+		return claudeLaunchContext{}, false
+	}
+	launch := currentClaudeLaunchContext(cwd)
+	if launch.SafeMode || launch.StrictMCP || (launch.Bare && len(launch.PluginDirs) == 0) {
+		return claudeLaunchContext{}, false
+	}
+	return launch, true
+}
+
+func (r *Runner) shouldWarmClaudeMCP(cwd string) bool {
+	_, ok := r.claudeMCPWarmContext(cwd)
+	return ok
+}
+
+func (r *Runner) warmClaudeMCP(cwd string) {
+	if launch, ok := r.claudeMCPWarmContext(cwd); ok {
+		_ = r.claudeMCPListEntries(launch)
+	}
 }
 
 func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
@@ -36,7 +59,7 @@ func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEnt
 	// Only one process runs the expensive health check for a context. Waiters
 	// consume its replacement snapshot instead of starting a probe stampede.
 	var unlock func()
-	deadline := time.Now().Add(claudeMCPListTimeout)
+	deadline := time.Now().Add(mcpListWaitTimeout)
 	backoff := 25 * time.Millisecond
 	for {
 		release, ok, lockErr := tryMCPListLock(path + ".lock")
@@ -53,13 +76,13 @@ func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEnt
 			unlock = release
 			break
 		}
-		if cached.CheckedAt != 0 {
-			return cached.Entries
-		}
 		if latest := readMCPListCache(path); mcpListCacheFresh(latest, r.mcpListNow()) {
 			return latest.Entries
 		}
 		if !time.Now().Before(deadline) {
+			if latest := readMCPListCache(path); latest.CheckedAt > cached.CheckedAt {
+				return latest.Entries
+			}
 			return cached.Entries
 		}
 		time.Sleep(backoff)

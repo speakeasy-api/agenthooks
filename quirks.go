@@ -131,7 +131,7 @@ var quirkRegistry = []Quirk{
 		Reference:  "provider MCP config formats"},
 	{ID: 26, Provider: ProviderClaudeCode, Versions: "all", Event: KindToolPre,
 		Behavior:   "plugin- and claude.ai-connector MCP servers appear in no on-disk config; only `claude mcp list` knows their transport, and it health-checks every server (seconds of wall time)",
-		Mitigation: "the runner recovers MCP-affecting launch flags through CLAUDE_PID, reproduces the local launch context, and caches replacement `claude mcp list` snapshots by a secret-safe context digest; launch-only --mcp-config is parsed directly, strict/bare/safe semantics are preserved, stale snapshots refresh so removals propagate, and remote --plugin-url servers fail unknown rather than being refetched",
+		Mitigation: "a detached SessionStart worker recovers MCP-affecting launch flags through CLAUDE_PID and warms a replacement `claude mcp list` snapshot keyed by a secret-safe context digest; the first MCP hook waits on only that context's in-flight probe, launch-only --mcp-config is parsed directly, strict/bare/safe semantics are preserved, and remote --plugin-url servers fail unknown rather than being refetched",
 		Reference:  "observed claude CLI behavior"},
 	{ID: 27, Provider: ProviderGemini, Versions: "all", Event: KindToolPre,
 		Behavior:   "extension-bundled MCP servers live in per-extension gemini-extension.json manifests, not settings.json",

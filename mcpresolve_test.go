@@ -19,6 +19,10 @@ import (
 const testHelperEnv = "AGENTHOOKS_TEST_HELPER"
 
 func TestMain(m *testing.M) {
+	if strings.EqualFold(strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0])), "claude") {
+		fakeClaudeMain()
+		os.Exit(0)
+	}
 	switch os.Getenv(testHelperEnv) {
 	case "fake-claude":
 		fakeClaudeMain()
@@ -26,6 +30,20 @@ func TestMain(m *testing.M) {
 	case "claude-launch":
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		os.Exit(0)
+	case "agenthooks-main":
+		if path := os.Getenv("AGENTHOOKS_TEST_MAIN_READY"); path != "" {
+			_ = os.WriteFile(path, []byte("ready"), 0o600)
+		}
+		r := quietRunner(WithDedupDir(os.Getenv("AGENTHOOKS_TEST_STATE_DIR")))
+		if path := os.Getenv("AGENTHOOKS_TEST_MCP_RESULT"); path != "" {
+			r.OnToolPre(func(_ context.Context, ev *ToolPreEvent) (ToolPreDecision, error) {
+				if ev.Tool.MCP != nil {
+					_ = os.WriteFile(path, []byte(ev.Tool.MCP.URL), 0o600)
+				}
+				return NoDecision(), nil
+			})
+		}
+		Main(r)
 	}
 	os.Exit(m.Run())
 }
@@ -45,6 +63,14 @@ func fakeClaudeMain() {
 		if f != nil {
 			_, _ = f.Write(append(data, '\n'))
 			_ = f.Close()
+		}
+	}
+	if gate := os.Getenv("AGENTHOOKS_FAKE_CLAUDE_GATE"); gate != "" {
+		for {
+			if _, err := os.Stat(gate); err == nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	if data, err := os.ReadFile(os.Getenv("AGENTHOOKS_FAKE_CLAUDE_OUTPUT")); err == nil {
@@ -94,6 +120,7 @@ type fakeClaude struct {
 	outputFile string
 	callsFile  string
 	exitFile   string
+	gateFile   string
 }
 
 type fakeClaudeCall struct {
@@ -115,20 +142,19 @@ func installFakeClaude(t *testing.T, output string) fakeClaude {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(binDir, name)
-	if err := os.Link(src, dst); err != nil {
-		data, err := os.ReadFile(src)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dst, data, 0o755); err != nil {
-			t.Fatal(err)
-		}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	h := fakeClaude{
 		countFile:  filepath.Join(binDir, "count"),
 		outputFile: filepath.Join(binDir, "output"),
 		callsFile:  filepath.Join(binDir, "calls"),
 		exitFile:   filepath.Join(binDir, "exit"),
+		gateFile:   filepath.Join(binDir, "gate"),
 	}
 	writeConfig(t, h.outputFile, output)
 	t.Setenv("PATH", binDir)
@@ -138,6 +164,35 @@ func installFakeClaude(t *testing.T, output string) fakeClaude {
 	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_CALLS", h.callsFile)
 	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_EXIT_FILE", h.exitFile)
 	return h
+}
+
+func agenthooksMainCommand(t *testing.T, stateDir, resultFile, readyFile string, payload []byte) *exec.Cmd {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "agenthooks", "run", "--provider=claude-code")
+	cmd.Env = append(withoutEnv(os.Environ(), testHelperEnv),
+		testHelperEnv+"=agenthooks-main",
+		"AGENTHOOKS_TEST_STATE_DIR="+stateDir,
+		"AGENTHOOKS_TEST_MCP_RESULT="+resultFile,
+		"AGENTHOOKS_TEST_MAIN_READY="+readyFile,
+	)
+	cmd.Stdin = strings.NewReader(string(payload))
+	return cmd
+}
+
+func waitForTestFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func fakeClaudeCLI(t *testing.T, output string) string {
@@ -729,6 +784,150 @@ func TestParseClaudeLaunchArgs(t *testing.T) {
 	}
 	if strings.Join(c.ReplayArgs, "\x00") != strings.Join(wantReplay, "\x00") {
 		t.Fatalf("replay args = %#v, want %#v", c.ReplayArgs, wantReplay)
+	}
+}
+
+func TestClaudeSessionStartSchedulesInventoryWarm(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	payload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"SessionStart","session_id":"s-warm","cwd":%q,"source":"startup"}`,
+		project,
+	))
+
+	r := quietRunner()
+	var warmed string
+	r.mcpWarmStart = func(cwd string) { warmed = cwd }
+	if _, code := runWith(t, r, claudeArgs(), payload); code != 0 || warmed != project {
+		t.Fatalf("SessionStart warm = %q, exit %d", warmed, code)
+	}
+
+	disabled := quietRunner(WithoutMCPListFallback())
+	disabled.mcpWarmStart = func(string) { t.Fatal("disabled fallback scheduled an inventory warm") }
+	if _, code := runWith(t, disabled, claudeArgs(), payload); code != 0 {
+		t.Fatalf("disabled SessionStart exit = %d", code)
+	}
+}
+
+func TestClaudeSessionStartWarmsInventoryInBackground(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	stateDir := t.TempDir()
+	resultFile := filepath.Join(t.TempDir(), "result")
+	readyFile := filepath.Join(t.TempDir(), "ready")
+	fake := installFakeClaude(t, "background: https://background.example.com/mcp - connected\n")
+	t.Setenv("AGENTHOOKS_FAKE_CLAUDE_GATE", fake.gateFile)
+	t.Cleanup(func() { _ = os.WriteFile(fake.gateFile, []byte("release"), 0o600) })
+	startClaudeLaunch(t, project, "-p", "prompt")
+
+	sessionPayload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"SessionStart","session_id":"s-background","cwd":%q,"source":"startup"}`,
+		project,
+	))
+	session := agenthooksMainCommand(t, stateDir, resultFile, readyFile, sessionPayload)
+	if err := session.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Process.Kill() })
+	sessionDone := make(chan error, 1)
+	go func() { sessionDone <- session.Wait() }()
+	select {
+	case err := <-sessionDone:
+		if err != nil {
+			t.Fatalf("SessionStart process failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = session.Process.Kill()
+		t.Fatal("SessionStart waited for blocked inventory discovery")
+	}
+
+	// The fake writes its count only after the detached worker owns the
+	// per-context lock, then waits on the gate before returning inventory.
+	waitForTestFile(t, fake.countFile)
+	_ = os.Remove(readyFile)
+	prePayload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"PreToolUse","session_id":"s-background","cwd":%q,"tool_name":"mcp__background__run","tool_input":{}}`,
+		project,
+	))
+	pre := agenthooksMainCommand(t, stateDir, resultFile, readyFile, prePayload)
+	if err := pre.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pre.Process.Kill() })
+	preDone := make(chan error, 1)
+	go func() { preDone <- pre.Wait() }()
+	waitForTestFile(t, readyFile)
+	select {
+	case err := <-preDone:
+		t.Fatalf("MCP hook did not wait for in-flight inventory: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	writeConfig(t, fake.gateFile, "release")
+	select {
+	case err := <-preDone:
+		if err != nil {
+			t.Fatalf("MCP hook failed after inventory arrived: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = pre.Process.Kill()
+		t.Fatal("MCP hook did not consume background inventory")
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "https://background.example.com/mcp" {
+		t.Fatalf("resolved transport = %q", data)
+	}
+	if got := cliRuns(t, fake.countFile); got != 1 {
+		t.Fatalf("background warm and first MCP must share one probe, ran %d times", got)
+	}
+}
+
+func TestClaudeMCPWaitsForInflightReplacementSnapshot(t *testing.T) {
+	isolateHome(t)
+	project := t.TempDir()
+	startClaudeLaunch(t, project, "-p", "prompt")
+	stateDir := t.TempDir()
+	r := quietRunner(WithDedupDir(stateDir))
+	now := time.Now().Truncate(time.Second)
+	r.now = func() time.Time { return now }
+	launch := currentClaudeLaunchContext(project)
+	dir := filepath.Join(stateDir, "agenthooks-mcplist")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, launch.cacheKey()+".json")
+	writeMCPListCache(path, mcpListCache{
+		CheckedAt: now.Add(-mcpListRefreshInterval - time.Second).Unix(),
+		Entries:   []mcpConfigEntry{{Name: "shared", URL: "https://stale.example.com/mcp"}},
+	})
+	release, locked, err := tryMCPListLock(path + ".lock")
+	if err != nil || !locked {
+		t.Fatalf("holding refresh lock: locked=%v err=%v", locked, err)
+	}
+
+	result := make(chan []mcpConfigEntry, 1)
+	go func() { result <- r.claudeMCPListEntries(launch) }()
+	select {
+	case entries := <-result:
+		release()
+		t.Fatalf("returned stale snapshot while refresh was in flight: %+v", entries)
+	case <-time.After(100 * time.Millisecond):
+	}
+	writeMCPListCache(path, mcpListCache{
+		CheckedAt: now.Unix(),
+		Entries:   []mcpConfigEntry{{Name: "shared", URL: "https://fresh.example.com/mcp"}},
+	})
+	release()
+	select {
+	case entries := <-result:
+		if len(entries) != 1 || entries[0].URL != "https://fresh.example.com/mcp" {
+			t.Fatalf("replacement snapshot = %+v", entries)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter did not consume replacement snapshot")
 	}
 }
 

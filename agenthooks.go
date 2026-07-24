@@ -45,6 +45,7 @@ type Runner struct {
 	dedupOff      bool
 	mcpResolveOff bool
 	mcpListOff    bool
+	mcpWarmStart  func(string)
 	backfillOff   bool
 	anyHandlers   []func(context.Context, *Event) error
 	otherByName   map[string][]func(context.Context, *Event) error
@@ -201,8 +202,20 @@ func (r *Runner) OnOther(nativeName string, fn func(context.Context, *Event) err
 // the normal path without the flag. Detaching is process management, so it
 // lives here rather than in the testable Run.
 func Main(r *Runner) {
+	if cwd, ok := claudeMCPWarmCWD(os.Args[1:]); ok {
+		r.warmClaudeMCP(cwd)
+		os.Exit(0)
+	}
 	if rest, ok := stripAsyncFlag(os.Args[1:]); ok {
 		os.Exit(detachSelf(rest, os.Stdin, os.Stderr))
+	}
+	mainArgs := append([]string(nil), os.Args[1:]...)
+	r.mcpWarmStart = func(cwd string) {
+		args := append([]string(nil), mainArgs...)
+		args = append(args, claudeMCPWarmFlag+"="+cwd)
+		if err := startDetachedSelf(args, nil); err != nil {
+			r.logger.Warn("agenthooks: starting Claude MCP inventory warm", "error", err)
+		}
 	}
 	realStdout := os.Stdout
 	if sink, err := logSink(); err == nil {
@@ -261,6 +274,13 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind), "tool", tool.Name, "session", base.Session.ID, "turn", base.Session.TurnID)
 	} else {
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind))
+	}
+
+	// Start the launch-context inventory probe without delaying SessionStart.
+	// A first MCP event arriving before it finishes waits on the same cache
+	// lock and consumes the worker's snapshot.
+	if provider == ProviderClaudeCode && base.Kind == KindSessionStart && r.mcpWarmStart != nil && r.shouldWarmClaudeMCP(base.Session.CWD) {
+		r.mcpWarmStart(base.Session.CWD)
 	}
 
 	// Attach MCP transport before the matcher filter runs: resolution can

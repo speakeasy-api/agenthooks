@@ -143,8 +143,10 @@ Codex trust-hash pre-seeding.
   `~/.codex/config.toml`, `.cursor/mcp.json`, `.gemini/settings.json` plus
   extension manifests, `~/.kimi/mcp.json`). On Claude Code, servers absent
   from config files
-  (plugins, claude.ai connectors) are attributed via `claude mcp list`, run
-  in the launching process's project and configuration context. On Claude Code
+  (plugins, claude.ai connectors) are attributed via `claude mcp list`, started
+  as a detached `SessionStart` warm in the launching process's project and
+  configuration context. The first MCP hook waits for that same context's
+  in-flight snapshot only when discovery has not finished. On Claude Code
   2.1.214+, launch-only `--mcp-config`, `--strict-mcp-config`, `--settings`,
   `--setting-sources`, `--plugin-dir`, `--bare`, and
   `--safe-mode` semantics are recovered through `CLAUDE_PID`; older versions

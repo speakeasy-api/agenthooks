@@ -122,19 +122,16 @@ func (c claudeLaunchContext) readValue(value string) ([]byte, bool) {
 // plugins. Claude's management command currently ignores --bare for its normal
 // inventory, so the result must be filtered back to the launch-only plugins.
 func (c claudeLaunchContext) barePluginEntries(entries []mcpConfigEntry) []mcpConfigEntry {
-	var prefixes []string
+	plugins := make(map[string]bool, len(c.PluginDirs))
 	for _, dir := range c.PluginDirs {
 		if name := c.pluginName(dir); name != "" {
-			prefixes = append(prefixes, claudeMCPServerPrefix("plugin", name, ""))
+			plugins[name] = true
 		}
 	}
 	var out []mcpConfigEntry
 	for _, e := range entries {
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(e.Prefix, prefix) {
-				out = append(out, e)
-				break
-			}
+		if plugins[e.Plugin] {
+			out = append(out, e)
 		}
 	}
 	return out
@@ -189,7 +186,7 @@ func (c claudeLaunchContext) cacheKey() string {
 		_, _ = h.Write([]byte(s))
 		_, _ = h.Write([]byte{0})
 	}
-	writeHashPart("agenthooks-claude-mcp-v2")
+	writeHashPart("agenthooks-claude-mcp-v3")
 	writeHashPart(c.ProjectDir)
 	writeHashPart(strconv.FormatBool(c.StrictMCP))
 	writeHashPart(strconv.FormatBool(c.Bare))

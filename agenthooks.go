@@ -220,11 +220,11 @@ func Main(r *Runner) {
 	}
 	if hasInternalFlag(os.Args[1:], codexLaunchContextFlag) {
 		launch, remaining, err := decodeCodexLaunchContext(stdin)
+		stdin = remaining
 		if err != nil {
 			r.logger.Warn("agenthooks: decoding Codex launch context", "error", err)
 		} else {
 			r.codexLaunchContext = &launch
-			stdin = remaining
 		}
 	}
 	if rest, ok := stripAsyncFlag(os.Args[1:]); ok {

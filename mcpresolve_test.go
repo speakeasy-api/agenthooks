@@ -519,6 +519,7 @@ url = "https://disk.example.com/mcp"
 `)
 	fake := installFakeCodex(t, `[{"name":"shared","enabled":true,"transport":{"type":"streamable_http","url":"https://launch.example.com/mcp"}}]`)
 	launch := parseCodexLaunchArgs([]string{"codex", "-c", `mcp_servers.shared.url="https://launch.example.com/mcp"`}, project)
+	launch.Executable = "" // Missing argv recovery falls back to PATH's codex.
 	r := mcpTestRunner(t)
 	r.codexLaunchContext = &launch
 	ev := mcpToolPre(ProviderCodex, project, "mcp__shared__run")
@@ -647,6 +648,29 @@ func TestCodexAsyncHookPreservesLaunchContext(t *testing.T) {
 	}
 }
 
+func TestCodexInvalidLaunchContextPreservesHookPayload(t *testing.T) {
+	home := isolateHome(t)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.direct]
+url = "https://direct.example.com/mcp"
+`)
+	resultFile := filepath.Join(t.TempDir(), "result")
+	payload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"PreToolUse","session_id":"s-invalid","cwd":%q,"tool_name":"mcp__direct__run","tool_input":{}}`,
+		project,
+	))
+	input := append([]byte("not-json\n"), payload...)
+	cmd := agenthooksMainCommandForProvider(t, ProviderCodex,
+		[]string{codexLaunchContextFlag}, t.TempDir(), resultFile, "", input)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil || string(data) != "https://direct.example.com/mcp" {
+		t.Fatalf("transport after invalid context=%q err=%v", data, err)
+	}
+}
+
 func TestResolveMCPCursor(t *testing.T) {
 	home := isolateHome(t)
 	cwd := t.TempDir()
@@ -665,6 +689,13 @@ func TestResolveMCPCursor(t *testing.T) {
 	// A second server (user scope) makes attribution ambiguous.
 	writeConfig(t, filepath.Join(home, ".cursor", "mcp.json"),
 		`{"mcpServers":{"other":{"command":"other-mcp"}}}`)
+	ev = mcpToolPre(ProviderCursor, cwd, "MCP:create_story")
+	ev.Tool.MCP.Server = "shortcut"
+	r.resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://mcp.shortcut.com/sse" || ev.Tool.MCP.Server != "shortcut" || !ev.Tool.MCP.FromConfig {
+		t.Errorf("payload server identity was not matched: %+v", ev.Tool.MCP)
+	}
+
 	ev = mcpToolPre(ProviderCursor, cwd, "MCP:create_story")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP.URL != "" || ev.Tool.MCP.FromConfig {
@@ -717,6 +748,26 @@ func TestResolveMCPGeminiPayloadContextWins(t *testing.T) {
 	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "my_srv" || ev.Tool.MCP.Tool != "do" ||
 		ev.Tool.MCP.URL != "" || ev.Tool.MCP.Command != "" || ev.Tool.MCP.FromConfig {
 		t.Fatalf("payload MCP context was overwritten by config: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestResolveMCPGeminiNullContextFallsBackToConfig(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".gemini", "settings.json"),
+		`{"mcpServers":{"my_srv":{"httpUrl":"https://g.example.com/mcp"}}}`)
+	raw := []byte(fmt.Sprintf(`{
+		"session_id":"s","cwd":%q,"hook_event_name":"BeforeTool","tool_name":"mcp_my_srv_do","tool_input":{},
+		"mcp_context":null
+	}`, cwd))
+	typed, err := decodeGemini(VariantUnknown, DetectionConfig, time.Now(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := typed.(*ToolPreEvent)
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://g.example.com/mcp" || !ev.Tool.MCP.FromConfig {
+		t.Fatalf("null Gemini MCP context did not fall back to config: %+v", ev.Tool.MCP)
 	}
 }
 
@@ -1348,6 +1399,7 @@ func TestClaudeMCPLaunchHarnessBareMode(t *testing.T) {
 	fake := installFakeClaude(t, strings.Join([]string{
 		"excluded: https://disk.example.com/mcp - connected",
 		"plugin:launch-plugin:tools: https://plugin.example.com/mcp - connected",
+		"plugin:launch-plugin-extra:leak: https://wrong.example.com/mcp - connected",
 	}, "\n"))
 	startClaudeLaunch(t, project, "-p", "prompt", "--bare", "--plugin-dir", pluginDir, "--mcp-config", "launch.json")
 	r := mcpTestRunner(t)
@@ -1358,11 +1410,16 @@ func TestClaudeMCPLaunchHarnessBareMode(t *testing.T) {
 	r.resolveMCP(plugin)
 	excluded := mcpToolPre(ProviderClaudeCode, project, "mcp__excluded__run")
 	r.resolveMCP(excluded)
+	leaked := mcpToolPre(ProviderClaudeCode, project, "mcp__plugin_launch-plugin-extra_leak__run")
+	r.resolveMCP(leaked)
 	if explicit.Tool.MCP.URL != "https://explicit.example.com/mcp" || plugin.Tool.MCP.URL != "https://plugin.example.com/mcp" {
 		t.Fatalf("bare explicit/plugin inventory wrong: explicit=%+v plugin=%+v", explicit.Tool.MCP, plugin.Tool.MCP)
 	}
 	if excluded.Tool.MCP.URL != "" {
 		t.Fatalf("bare mode must exclude ordinary config: %+v", excluded.Tool.MCP)
+	}
+	if leaked.Tool.MCP.URL != "" {
+		t.Fatalf("bare mode matched a similarly named plugin: %+v", leaked.Tool.MCP)
 	}
 	calls := fake.calls(t)
 	if len(calls) != 1 || len(calls[0].Args) == 0 || calls[0].Args[0] != "--bare" {
@@ -1549,21 +1606,31 @@ func TestClaudeMCPLaunchHarnessConcurrentContextsSingleflight(t *testing.T) {
 
 func TestMCPListCacheCleanup(t *testing.T) {
 	dir := t.TempDir()
-	oldPath := filepath.Join(dir, "old.json")
+	oldPaths := []string{
+		filepath.Join(dir, "old.json"),
+		filepath.Join(dir, "old.json.lock"),
+		filepath.Join(dir, "inventory-orphan"),
+	}
 	newPath := filepath.Join(dir, "new.json")
-	writeConfig(t, oldPath, `{}`)
+	for _, path := range oldPaths {
+		writeConfig(t, path, `{}`)
+	}
 	writeConfig(t, newPath, `{}`)
 	now := time.Unix(1_800_000_000, 0)
 	old := now.Add(-mcpListCacheRetention - time.Second)
-	if err := os.Chtimes(oldPath, old, old); err != nil {
-		t.Fatal(err)
+	for _, path := range oldPaths {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.Chtimes(newPath, now, now); err != nil {
 		t.Fatal(err)
 	}
 	cleanupMCPListCache(dir, now)
-	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
-		t.Fatalf("expired cache was not removed: %v", err)
+	for _, path := range oldPaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expired cache artifact %q was not removed: %v", path, err)
+		}
 	}
 	if _, err := os.Stat(newPath); err != nil {
 		t.Fatalf("fresh cache was removed: %v", err)

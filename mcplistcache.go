@@ -44,12 +44,14 @@ func (r *Runner) warmClaudeMCP(cwd string) {
 }
 
 func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
-	return r.cachedMCPListEntries(launch.cacheKey(), func() ([]mcpConfigEntry, bool) {
-		return runClaudeMCPList(launch)
+	return r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+		return runClaudeMCPList(ctx, launch)
 	})
 }
 
-func (r *Runner) cachedMCPListEntries(key string, probe func() ([]mcpConfigEntry, bool)) []mcpConfigEntry {
+func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([]mcpConfigEntry, bool)) []mcpConfigEntry {
+	ctx, cancel := context.WithTimeout(context.Background(), mcpListWaitTimeout)
+	defer cancel()
 	dir := r.mcpListCacheDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil
@@ -73,7 +75,7 @@ func (r *Runner) cachedMCPListEntries(key string, probe func() ([]mcpConfigEntry
 			if cached.CheckedAt != 0 {
 				return cached.Entries
 			}
-			if entries, success := probe(); success {
+			if entries, success := probe(ctx); success {
 				return entries
 			}
 			return nil
@@ -103,7 +105,7 @@ func (r *Runner) cachedMCPListEntries(key string, probe func() ([]mcpConfigEntry
 	if mcpListCacheFresh(cached, now) {
 		return cached.Entries
 	}
-	if entries, success := probe(); success {
+	if entries, success := probe(ctx); success {
 		cached.Entries = entries // successful probes replace, so removals stick
 	}
 	cached.CheckedAt = now.Unix()
@@ -150,8 +152,8 @@ func (r *Runner) warmCodexMCP(launch codexLaunchContext) {
 }
 
 func (r *Runner) codexMCPListEntries(launch codexLaunchContext) []mcpConfigEntry {
-	return r.cachedMCPListEntries(launch.cacheKey(), func() ([]mcpConfigEntry, bool) {
-		return runCodexMCPList(launch)
+	return r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+		return runCodexMCPList(ctx, launch)
 	})
 }
 
@@ -164,11 +166,8 @@ func cleanupMCPListCache(dir string, now time.Time) {
 		if entry.IsDir() {
 			continue
 		}
-		if info, err := entry.Info(); err == nil {
-			age := now.Sub(info.ModTime())
-			if filepath.Ext(entry.Name()) == ".json" && age > mcpListCacheRetention {
-				_ = os.Remove(filepath.Join(dir, entry.Name()))
-			}
+		if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > mcpListCacheRetention {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
 		}
 	}
 }
@@ -214,12 +213,12 @@ func writeMCPListCache(path string, cached mcpListCache) {
 	}
 }
 
-func runClaudeMCPList(launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
+func runClaudeMCPList(parent context.Context, launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
 	bin, err := exec.LookPath("claude")
 	if err != nil {
 		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mcpListProbeTimeout)
+	ctx, cancel := context.WithTimeout(parent, mcpListProbeTimeout)
 	defer cancel()
 	args := append([]string(nil), launch.ReplayArgs...)
 	if launch.Bare {
@@ -237,16 +236,19 @@ func runClaudeMCPList(launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
 	return parseClaudeMCPList(string(out)), true
 }
 
-func runCodexMCPList(launch codexLaunchContext) ([]mcpConfigEntry, bool) {
+func runCodexMCPList(parent context.Context, launch codexLaunchContext) ([]mcpConfigEntry, bool) {
 	bin := launch.Executable
-	if bin == "" || !filepath.IsAbs(bin) {
+	if bin == "" {
+		bin = "codex"
+	}
+	if !filepath.IsAbs(bin) {
 		var err error
 		bin, err = exec.LookPath(bin)
 		if err != nil {
 			return nil, false
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mcpListProbeTimeout)
+	ctx, cancel := context.WithTimeout(parent, mcpListProbeTimeout)
 	defer cancel()
 	args := append(launch.replayArgs(), "mcp", "list", "--json")
 	cmd := exec.CommandContext(ctx, bin, args...)

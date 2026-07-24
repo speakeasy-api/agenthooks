@@ -33,6 +33,7 @@ type mcpConfigEntry struct {
 	Name    string `json:"name"`
 	URL     string `json:"url,omitempty"`
 	Command string `json:"command,omitempty"`
+	Plugin  string `json:"plugin,omitempty"`
 	// Prefix is the pre-computed tool-name prefix, set when the source knows
 	// better than sanitize(Name): `claude mcp list` entries carry source-
 	// dependent prefixes (claude_ai_*, plugin_*_*). Empty means derive.
@@ -70,8 +71,10 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 	}
 	// Gemini's mcp_context is authoritative even for transports (currently
 	// tcp) the unified URL/Command model cannot represent.
-	if base.Provider == ProviderGemini && len(rawField(base.Raw, "mcp_context")) > 0 {
-		return
+	if base.Provider == ProviderGemini {
+		if raw := rawField(base.Raw, "mcp_context"); len(raw) > 0 && string(raw) != "null" {
+			return
+		}
 	}
 	var (
 		matched      *mcpConfigEntry
@@ -95,9 +98,16 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", verbatimMCPName)
 	case ProviderCursor:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
-		// MCP:<tool> carries no server identity (quirk #3). Attribution is
-		// only sound when exactly one server is configured.
-		if len(entries) == 1 {
+		if tc.MCP.Server != "" {
+			for i := range entries {
+				if entries[i].Name == tc.MCP.Server {
+					matched, server, tool = &entries[i], tc.MCP.Server, tc.MCP.Tool
+					break
+				}
+			}
+		} else if len(entries) == 1 {
+			// Older payloads carry no server identity; attribution is only
+			// sound when exactly one server is configured.
 			matched, server, tool = &entries[0], entries[0].Name, tc.MCP.Tool
 		}
 	}
@@ -704,7 +714,7 @@ func parseClaudeMCPListLine(line string) (mcpConfigEntry, bool) {
 	}
 
 	source, plugin, display := classifyClaudeMCPName(name)
-	e := mcpConfigEntry{Name: display, Prefix: claudeMCPServerPrefix(source, plugin, display)}
+	e := mcpConfigEntry{Name: display, Plugin: plugin, Prefix: claudeMCPServerPrefix(source, plugin, display)}
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 		e.URL = target
 	} else {

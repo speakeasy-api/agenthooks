@@ -30,10 +30,10 @@ type Reply struct {
 	Error  string         `json:"error,omitempty"`
 }
 
-// InitializeInput is the startup frame payload carrying OpenCode server info
-// for the optional HTTP client (permission replies via
-// POST /session/:id/permissions/:permissionID, context injection via
-// session.prompt with noReply).
+// InitializeInput is the shim's lazy initialization payload carrying OpenCode
+// server info and its resolved MCP inventory for the optional HTTP client
+// (permission replies via POST /session/:id/permissions/:permissionID,
+// context injection via session.prompt with noReply).
 type InitializeInput struct {
 	ServerURL string                     `json:"serverUrl"`
 	Directory string                     `json:"directory"`

@@ -44,8 +44,8 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 			r.logger.Error("agenthooks: bad shim frame", "error", err)
 			continue
 		}
-		// The startup frame delivers serverUrl/directory/worktree for the
-		// optional HTTP client (permission replies, context injection).
+		// The shim's first runtime hook sends server info plus the resolved MCP
+		// inventory; omitted MCP falls back to direct config reads.
 		if fr.Hook == "initialize" {
 			var info struct {
 				ServerURL string                      `json:"serverUrl"`

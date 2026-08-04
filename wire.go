@@ -171,7 +171,7 @@ var wireKinds = map[EventKind]string{
 // by construction.
 func EncodeWire(typed any) ([]byte, error) {
 	if isNilPtr(typed) {
-		return nil, fmt.Errorf("agenthooks: EncodeWire: %T is not an agenthooks event", typed)
+		return nil, fmt.Errorf("agenthooks: EncodeWire: nil %T", typed)
 	}
 	base := eventOf(typed)
 	if base == nil {

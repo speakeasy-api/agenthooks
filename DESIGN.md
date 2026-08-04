@@ -161,28 +161,22 @@ type Event struct {
 	Session SessionInfo
 	Agent   *AgentInfo // non-nil inside a subagent context
 
-	// Backfilled marks a synthesized event for a provider miss (e.g. print
-	// modes that skip prompt hooks): reporting-only, nil Raw, no capabilities.
-	Backfilled bool
-
 	// Raw is the verbatim provider payload. Never normalized, never trimmed.
 	Raw json.RawMessage
 
 	// Ext carries embedder-defined extension data. The library never reads,
-	// writes, or propagates it; applications that construct typed events
-	// themselves stamp app-specific context here for their own handlers.
+	// writes, or propagates it (and the wire codec never serializes it);
+	// applications that construct typed events themselves stamp app-specific
+	// context here for their own handlers.
 	Ext map[string]any
 }
 
 type SessionInfo struct {
-	ID             string // claude/codex/gemini session_id; cursor conversation_id
-	TurnID         string // codex turn_id, cursor generation_id, claude prompt_id ("" if absent)
-	CWD            string
-	WorkspaceRoots []string // cursor multi-root; others: [CWD] or project dir
-	TranscriptPath string   // "" if unavailable; format is provider-specific (see transcript pkg)
-	Model          string   // "" if not reported
-	PermissionMode string   // claude/codex permission_mode; "" elsewhere
-	UserEmail      string   // cursor user_email; "" elsewhere
+	ID        string // claude/codex/gemini session_id; cursor conversation_id
+	TurnID    string // codex turn_id, cursor generation_id, claude prompt_id ("" if absent)
+	CWD       string
+	Model     string // "" if not reported
+	UserEmail string // cursor user_email; "" elsewhere
 }
 
 type AgentInfo struct {
@@ -190,6 +184,39 @@ type AgentInfo struct {
 	Type string // provider's subagent type name
 }
 ```
+
+#### Core events vs. ClientEvent
+
+The envelope carries exactly the data that is meaningful **off the machine
+the hook fired on** — that is the invariant the wire codec (§3.6) relies on.
+Client-local context lives on `ClientEvent`, which the client runner builds
+at decode time and installs on the handler context:
+
+```go
+type ClientEvent struct {
+	Typed               any                 // the decoded typed event this context belongs to
+	DetectionConfidence DetectionConfidence // "config" | "env" | "shape"
+	Backfilled          bool                // synthesized provider miss: reporting-only
+	Session             LocalSession
+}
+
+type LocalSession struct {
+	TranscriptPath string   // "" if unavailable; format is provider-specific (see transcript pkg)
+	WorkspaceRoots []string // cursor multi-root; others: [CWD] or project dir
+	PermissionMode string   // claude/codex permission_mode; "" elsewhere
+}
+
+func ClientEventFromContext(ctx context.Context) *ClientEvent // nil outside the client runner
+```
+
+This mirrors the server-side pattern of installing request state on the
+context before `Decide`: handlers that need machine-local data (transcript
+path, workspace roots, permission mode, how the provider was detected,
+whether the event is a backfill) reach it via `ClientEventFromContext(ctx)`;
+handlers running under a server-side embedder get `nil`. Backfilled events
+keep their semantics — reporting-only, `Raw` nil, `Can()` reports no
+capabilities, decisions discarded — the flag simply rides `ClientEvent`
+instead of the envelope.
 
 Provider-specific fields that don't generalize are reached two ways, both
 lossless:
@@ -378,6 +405,48 @@ are opaque to Walk — bare funcs carry no metadata — and a richer
 introspectable interface can be layered on later without breaking the
 func-type API.
 
+### 3.6 Wire codec
+
+`EncodeWire(typed any) ([]byte, error)` / `DecodeWire(data []byte) (any, error)`
+serialize typed events for transport off-machine (client → server relays,
+queues, storage). The format is schema-versioned, kind-tagged JSON:
+
+```json
+{
+  "v": "agenthooks.event.v1",
+  "kind": "tool.pre",
+  "event": {
+    "provider": "claude-code",
+    "variant": "cli",
+    "native_name": "PreToolUse",
+    "time": "2026-07-02T12:00:00Z",
+    "session": {"id": "sess-1", "turn_id": "turn-1", "cwd": "/work/repo", "model": "opus", "user_email": "dev@example.com"},
+    "agent": {"id": "agent-1", "type": "researcher"},
+    "raw": {"hook_event_name": "PreToolUse", "...": "verbatim provider payload"}
+  },
+  "payload": {"tool": {"id": "toolu_01", "name": "Bash", "canonical": "shell", "input": {"command": "ls"}}}
+}
+```
+
+`event` is the core envelope; `payload` carries the kind-specific fields of
+the typed event (tool call incl. MCP identity and `from_config`, prompt
+text, output/failed/error/duration, stop fields, usage, ...). `DecodeWire`
+returns the concrete typed event (`*ToolPreEvent`, `*PromptEvent`, ...);
+kind tags with no typed mapping — `other`, or kinds introduced by newer
+library versions — decode to a bare `*Event` so relays never drop events
+across version skew.
+
+The schema is decoupled from Go field naming via internal DTOs with explicit
+json tags: renaming a Go field can never silently change the wire. Never
+serialized: `Event.Ext` (embedder-local, each side stamps its own) and
+everything on `ClientEvent` (client-local by definition, §3.2).
+
+**Stability rules (v1): append-only.** New optional fields may be added;
+existing fields are never renamed, retyped, or removed. Anything non-additive
+requires a new version string. `DecodeWire` errors on unknown versions,
+tolerates unknown fields (forward compatibility), and zero-values missing
+optional fields. Golden fixtures under `testdata/wire/` pin the format in CI.
+
 ---
 
 ## 4. Decision model
@@ -535,8 +604,8 @@ Runtime responsibilities per mode:
   config; fallback = env sniffing (`CLAUDE_PLUGIN_ROOT`/`CLAUDE_PROJECT_DIR`,
   `CURSOR_VERSION`, `GEMINI_CWD`, `CODEX_HOME`) then payload-shape sniffing
   (`hook_event_name` casing, `conversation_id` presence). Detection result is
-  on the event (`Provider`, `Variant`, plus `DetectionConfidence` for
-  observability). Note Codex/Cursor deliberately export `CLAUDE_*` compat vars,
+  on the event (`Provider`, `Variant`) plus `ClientEvent.DetectionConfidence`
+  for observability. Note Codex/Cursor deliberately export `CLAUDE_*` compat vars,
   so env sniffing alone is insufficient — flag-first is a hard rule.
 - **Variant detection**: cowork = cmux `local_<rid>.json` adjacency /
   `CLAUDE_PROJECT_DIR` shape; remote = `CLAUDE_CODE_REMOTE`; cursor cloud/CLI

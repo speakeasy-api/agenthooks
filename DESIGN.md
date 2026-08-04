@@ -433,8 +433,9 @@ the typed event (tool call incl. MCP identity and `from_config`, prompt
 text, output/failed/error/duration, stop fields, usage, ...). `DecodeWire`
 returns the concrete typed event (`*ToolPreEvent`, `*PromptEvent`, ...);
 kind tags with no typed mapping — `other`, or kinds introduced by newer
-library versions — decode to a bare `*Event` so relays never drop events
-across version skew.
+library versions — decode to a bare `*Event` that carries the undecoded
+payload internally and re-emits it on encode, so relays never drop events
+(or their payloads) across version skew.
 
 The schema is decoupled from Go field naming via internal DTOs with explicit
 json tags: renaming a Go field can never silently change the wire. Never

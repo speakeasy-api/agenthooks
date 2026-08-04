@@ -2,6 +2,7 @@ package agenthooks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -22,6 +23,11 @@ import (
 //   - Event.Ext: embedder-local extension data; each side stamps its own.
 //   - Everything on ClientEvent (detection confidence, backfill flag,
 //     LocalSession): client-local by definition.
+//
+// Raw payloads (Event.Raw, tool inputs/outputs) ride as nested JSON values:
+// the JSON value crosses the wire exactly, but encoding/json compacts
+// whitespace and re-escapes strings, so byte-for-byte formatting of the
+// provider's original bytes is not a wire guarantee.
 //
 // Schema stability rules (v1): append-only. New optional fields may be
 // added; existing fields are never renamed, retyped, or removed. Anything
@@ -164,9 +170,15 @@ var wireKinds = map[EventKind]string{
 // into the versioned wire form. Ext and all client-local state are excluded
 // by construction.
 func EncodeWire(typed any) ([]byte, error) {
+	if isNilPtr(typed) {
+		return nil, fmt.Errorf("agenthooks: EncodeWire: %T is not an agenthooks event", typed)
+	}
 	base := eventOf(typed)
 	if base == nil {
 		return nil, fmt.Errorf("agenthooks: EncodeWire: %T is not an agenthooks event", typed)
+	}
+	if base.Kind == "" {
+		return nil, errors.New("agenthooks: EncodeWire: event has no kind")
 	}
 	family, ok := wireFamily(typed)
 	if !ok {
@@ -177,9 +189,12 @@ func EncodeWire(typed any) ([]byte, error) {
 	}
 
 	var payload any
+	var passthrough json.RawMessage
 	switch ev := typed.(type) {
 	case *Event:
-		payload = nil
+		// A bare envelope re-emits any payload preserved by DecodeWire's
+		// unknown-kind fallback, so decode -> encode relays stay lossless.
+		passthrough = ev.wirePayload
 	case *SessionStartEvent:
 		payload = &wireSessionStartPayload{Source: ev.Source}
 	case *SessionEndEvent:
@@ -226,6 +241,8 @@ func EncodeWire(typed any) ([]byte, error) {
 			return nil, fmt.Errorf("agenthooks: EncodeWire: marshaling %s payload: %w", base.Kind, err)
 		}
 		env.Payload = b
+	} else if len(passthrough) > 0 {
+		env.Payload = passthrough
 	}
 	out, err := json.Marshal(env)
 	if err != nil {
@@ -239,8 +256,9 @@ func EncodeWire(typed any) ([]byte, error) {
 // error; unknown JSON fields are ignored (forward compatibility); missing
 // optional fields decode to their zero values. Kind tags with no typed
 // mapping — KindOther today, kinds introduced by future versions of this
-// package — decode to a bare *Event so the envelope survives even when the
-// payload shape is unknown.
+// package — decode to a bare *Event carrying the undecoded payload, which
+// EncodeWire re-emits, so relays never drop events (or their payloads)
+// across version skew.
 func DecodeWire(data []byte) (any, error) {
 	var env wireEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -248,6 +266,9 @@ func DecodeWire(data []byte) (any, error) {
 	}
 	if env.V != WireSchemaV1 {
 		return nil, fmt.Errorf("agenthooks: DecodeWire: unsupported wire schema version %q (want %q)", env.V, WireSchemaV1)
+	}
+	if env.Kind == "" {
+		return nil, errors.New("agenthooks: DecodeWire: frame has no kind")
 	}
 	base := eventFromWire(&env)
 
@@ -298,10 +319,12 @@ func DecodeWire(data []byte) (any, error) {
 			return nil, err
 		}
 		return &ToolPostEvent{
-			Event:      base,
-			Tool:       toolFromWire(p.Tool),
-			Output:     p.Output,
-			Failed:     p.Failed,
+			Event:  base,
+			Tool:   toolFromWire(p.Tool),
+			Output: p.Output,
+			// The tool.error tag implies failure even when the optional
+			// flag is absent, so error handlers dispatch correctly.
+			Failed:     p.Failed || EventKind(env.Kind) == KindToolError,
 			Error:      p.Error,
 			DurationMS: p.DurationMS,
 		}, nil
@@ -340,8 +363,10 @@ func DecodeWire(data []byte) (any, error) {
 	case KindModelRequest, KindModelResponse:
 		return &ModelEvent{Event: base}, nil
 	}
-	// KindOther and kinds this build does not know: keep the envelope.
+	// KindOther and kinds this build does not know: keep the envelope and
+	// stash the undecoded payload so re-encoding does not drop it.
 	ev := base
+	ev.wirePayload = env.Payload
 	return &ev, nil
 }
 

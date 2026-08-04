@@ -211,9 +211,10 @@ func TestWireForwardCompat(t *testing.T) {
 }
 
 // TestWireUnknownKind: kind tags this build cannot type decode to the bare
-// envelope, so relays never drop events across version skew.
+// envelope, and re-encoding preserves the undecoded payload, so relays never
+// drop events (or their payloads) across version skew.
 func TestWireUnknownKind(t *testing.T) {
-	data := `{"v":"agenthooks.event.v1","kind":"hologram.rendered","event":{"provider":"cursor","native_name":"holo"}}`
+	data := `{"v":"agenthooks.event.v1","kind":"hologram.rendered","event":{"provider":"cursor","native_name":"holo"},"payload":{"shape":"cube"}}`
 	got, err := DecodeWire([]byte(data))
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +222,46 @@ func TestWireUnknownKind(t *testing.T) {
 	ev, ok := got.(*Event)
 	if !ok || ev.Kind != EventKind("hologram.rendered") || ev.NativeName != "holo" {
 		t.Errorf("unknown kind must decode to *Event: %#v", got)
+	}
+	re, err := EncodeWire(ev)
+	if err != nil {
+		t.Fatalf("EncodeWire(unknown kind): %v", err)
+	}
+	if !strings.Contains(string(re), `"shape":"cube"`) {
+		t.Errorf("unknown-kind payload must survive re-encode: %s", re)
+	}
+	again, err := DecodeWire(re)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again, got) {
+		t.Errorf("unknown-kind relay round trip diverged:\n got %#v\nwant %#v", again, got)
+	}
+}
+
+// TestWireMissingKind: kind is the required discriminator in both
+// directions — frames and events without it are malformed, not empty-kind
+// events.
+func TestWireMissingKind(t *testing.T) {
+	if _, err := DecodeWire([]byte(`{"v":"agenthooks.event.v1","event":{"provider":"cursor"}}`)); err == nil {
+		t.Error("frame without kind must be rejected")
+	}
+	if _, err := EncodeWire(&Event{Provider: ProviderCursor}); err == nil {
+		t.Error("event without kind must be rejected")
+	}
+}
+
+// TestWireToolErrorImpliesFailed: the tool.error kind tag implies failure
+// even when the optional failed flag is absent from the payload.
+func TestWireToolErrorImpliesFailed(t *testing.T) {
+	data := `{"v":"agenthooks.event.v1","kind":"tool.error","event":{"provider":"opencode"},"payload":{"tool":{"name":"read"}}}`
+	got, err := DecodeWire([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post, ok := got.(*ToolPostEvent)
+	if !ok || !post.Failed {
+		t.Errorf("tool.error must decode with Failed set: %#v", got)
 	}
 }
 
@@ -251,6 +292,12 @@ func TestWireExtNeverSerialized(t *testing.T) {
 func TestWireEncodeValidation(t *testing.T) {
 	if _, err := EncodeWire(42); err == nil {
 		t.Error("non-events must be rejected")
+	}
+	if _, err := EncodeWire((*ToolPreEvent)(nil)); err == nil {
+		t.Error("typed-nil events must be rejected, not panic")
+	}
+	if _, err := EncodeWire((*Event)(nil)); err == nil {
+		t.Error("typed-nil *Event must be rejected, not panic")
 	}
 	if _, err := EncodeWire(&ToolPreEvent{Event: wireBase(KindToolPost)}); err == nil {
 		t.Error("kind/type mismatch must be rejected")

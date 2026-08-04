@@ -95,6 +95,12 @@ type Event struct {
 	// the client runner's backfill synthesis sets it, and it never crosses
 	// the wire.
 	backfilled bool
+
+	// wirePayload preserves the kind-specific payload of a decoded wire
+	// frame whose kind this build has no typed mapping for. EncodeWire
+	// re-emits it, so decode -> encode relays stay lossless across version
+	// skew. Only the wire codec touches it.
+	wirePayload json.RawMessage
 }
 
 // SessionInfo carries the normalized session identity fields — the subset

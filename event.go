@@ -59,17 +59,14 @@ const (
 	KindOther           EventKind = "other" // any unmapped native event
 )
 
-// DetectionConfidence records how the invoking provider was identified.
-type DetectionConfidence string
-
-const (
-	DetectionConfig DetectionConfidence = "config" // --provider flag from generated config
-	DetectionEnv    DetectionConfidence = "env"    // environment variable sniffing
-	DetectionShape  DetectionConfidence = "shape"  // payload shape sniffing
-)
-
 // Event is the unified envelope. Raw is always the verbatim provider payload;
 // normalization is a projection over it, never a replacement.
+//
+// The envelope carries exactly the data that is meaningful off the machine
+// the hook fired on. Client-local context — detection confidence, the
+// backfill flag, transcript paths, workspace roots, permission mode — lives
+// on ClientEvent, which the client runner exposes to handlers via
+// ClientEventFromContext.
 type Event struct {
 	Provider   Provider
 	Variant    Variant
@@ -80,15 +77,6 @@ type Event struct {
 	Session SessionInfo
 	Agent   *AgentInfo // non-nil inside a subagent context
 
-	DetectionConfidence DetectionConfidence
-
-	// Backfilled marks an event the provider never sent: some providers skip
-	// events in some modes (quirks #30, #31), and the runner synthesizes the
-	// miss on the next delivered event, best-effort. Backfilled events are
-	// reporting-only — Raw is nil, Can() reports no capabilities, and any
-	// decision returned by the handler is discarded.
-	Backfilled bool
-
 	// Raw is the verbatim provider payload. Never normalized, never trimmed.
 	Raw json.RawMessage
 
@@ -97,20 +85,28 @@ type Event struct {
 	// applications that construct typed events themselves (e.g. a server-side
 	// ingest path re-projecting stored payloads) to stamp app-specific
 	// context their own handlers read back. Nil on every event the library
-	// decodes.
+	// decodes, and never serialized by the wire codec.
 	Ext map[string]any
+
+	// backfilled marks an event the provider never sent (see
+	// ClientEvent.Backfilled for the public surface). It stays unexported on
+	// the envelope so Can can keep reporting no capabilities for backfilled
+	// events without carrying client-local state in the public shape: only
+	// the client runner's backfill synthesis sets it, and it never crosses
+	// the wire.
+	backfilled bool
 }
 
-// SessionInfo carries the normalized session identity fields.
+// SessionInfo carries the normalized session identity fields — the subset
+// that is meaningful off-machine. Machine-local session context (transcript
+// path, workspace roots, permission mode) lives on LocalSession, reachable
+// through ClientEventFromContext.
 type SessionInfo struct {
-	ID             string // claude/codex/gemini session_id; cursor conversation_id
-	TurnID         string // codex turn_id, cursor generation_id, claude prompt_id ("" if absent)
-	CWD            string
-	WorkspaceRoots []string // cursor multi-root; others: [CWD] or project dir
-	TranscriptPath string   // "" if unavailable; format is provider-specific (see transcript pkg)
-	Model          string   // "" if not reported
-	PermissionMode string   // claude/codex permission_mode; "" elsewhere
-	UserEmail      string   // cursor user_email; "" elsewhere
+	ID        string // claude/codex/gemini session_id; cursor conversation_id
+	TurnID    string // codex turn_id, cursor generation_id, claude prompt_id ("" if absent)
+	CWD       string
+	Model     string // "" if not reported
+	UserEmail string // cursor user_email; "" elsewhere
 }
 
 // AgentInfo describes the subagent context, when the event fired inside one.

@@ -49,9 +49,9 @@ func main() {
 	cfg := loadConfig()
 
 	r := agenthooks.New()
-	r.OnAny(func(_ context.Context, e *agenthooks.Event) error {
+	r.OnAny(func(ctx context.Context, e *agenthooks.Event) error {
 		appendRecord(cfg.Out, record{
-			Backfilled: e.Backfilled,
+			Backfilled: backfilled(ctx),
 			TimeMS:     e.Time.UnixMilli(),
 			Provider:   string(e.Provider),
 			Variant:    string(e.Variant),
@@ -63,10 +63,10 @@ func main() {
 		})
 		return nil
 	})
-	r.OnPromptSubmitted(func(_ context.Context, e *agenthooks.PromptEvent) (agenthooks.PromptDecision, error) {
+	r.OnPromptSubmitted(func(ctx context.Context, e *agenthooks.PromptEvent) (agenthooks.PromptDecision, error) {
 		appendRecord(cfg.Out, record{
 			Typed:      true,
-			Backfilled: e.Backfilled,
+			Backfilled: backfilled(ctx),
 			TimeMS:     e.Time.UnixMilli(),
 			Provider:   string(e.Provider),
 			Native:     e.NativeName,
@@ -98,6 +98,12 @@ func main() {
 	})
 
 	agenthooks.Main(r)
+}
+
+// backfilled reads the client-only backfill flag off the dispatch context.
+func backfilled(ctx context.Context) bool {
+	ce := agenthooks.ClientEventFromContext(ctx)
+	return ce != nil && ce.Backfilled
 }
 
 func loadConfig() config {

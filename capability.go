@@ -110,7 +110,7 @@ func Capabilities(p Provider, v Variant, k EventKind) CapSet {
 // events are reporting-only: the provider never sent them, so nothing can be
 // gated or mutated.
 func (e *Event) Can(c Capability) bool {
-	if e.Backfilled {
+	if e.backfilled {
 		return false
 	}
 	return Capabilities(e.Provider, e.Variant, e.Kind).Has(c)

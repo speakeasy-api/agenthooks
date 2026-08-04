@@ -41,23 +41,25 @@ func noOpResponse(p Provider) wireResponse {
 
 func joinContext(ss []string) string { return strings.Join(ss, "\n") }
 
-// decodePayload turns a provider payload into a typed event.
-func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+// decodePayload turns a provider payload into a typed event plus the
+// machine-local session context that rides ClientEvent rather than the core
+// envelope.
+func decodePayload(p Provider, v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	switch p {
 	case ProviderClaudeCode:
-		return decodeClaude(v, conf, now, payload)
+		return decodeClaude(v, now, payload)
 	case ProviderCodex:
-		return decodeCodex(v, conf, now, payload)
+		return decodeCodex(v, now, payload)
 	case ProviderCursor:
-		return decodeCursor(v, conf, now, payload)
+		return decodeCursor(v, now, payload)
 	case ProviderGemini:
-		return decodeGemini(v, conf, now, payload)
+		return decodeGemini(v, now, payload)
 	case ProviderOpenCode:
-		return decodeOpenCodeLine(v, conf, now, payload)
+		return decodeOpenCodeLine(v, now, payload)
 	case ProviderKimi:
-		return decodeKimi(v, conf, now, payload)
+		return decodeKimi(v, now, payload)
 	}
-	return nil, fmt.Errorf("agenthooks: unknown provider %q", p)
+	return nil, LocalSession{}, fmt.Errorf("agenthooks: unknown provider %q", p)
 }
 
 // encodeDecision translates a decision into the provider's dialect.

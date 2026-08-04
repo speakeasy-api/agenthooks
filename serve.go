@@ -69,7 +69,7 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
-		typed, err := decodeOpenCodeFrame(inv.variant, DetectionConfig, r.now(), &fr, lineCopy)
+		typed, local, err := decodeOpenCodeFrame(inv.variant, r.now(), &fr, lineCopy)
 		if err != nil {
 			r.logger.Error("agenthooks: decode failed", "hook", fr.Hook, "error", err)
 			_ = enc.Encode(opencodeReply{Seq: fr.Seq})
@@ -78,8 +78,9 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 		base := eventOf(typed)
 		if base.Session.CWD == "" {
 			base.Session.CWD = serverInfo.Directory
-			base.Session.WorkspaceRoots = rootsFor(serverInfo.Directory)
+			local.WorkspaceRoots = rootsFor(serverInfo.Directory)
 		}
+		ce := &ClientEvent{Typed: typed, DetectionConfidence: DetectionConfig, Session: local}
 		if serverInfo.MCPExact {
 			r.resolveMCPWithOpenCodeInventory(typed, &serverInfo.MCP)
 		} else {
@@ -90,7 +91,7 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 		if deadline == 0 {
 			deadline = defaultDeadline
 		}
-		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+		hctx, cancel := context.WithTimeout(withClientEvent(withLogger(ctx, r.logger), ce), deadline)
 		core, herr := r.dispatch(hctx, typed)
 		cancel()
 		if herr != nil {

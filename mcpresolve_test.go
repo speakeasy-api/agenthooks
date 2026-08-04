@@ -774,7 +774,7 @@ func TestResolveMCPGeminiPayloadContextWins(t *testing.T) {
 		"session_id":"s","cwd":%q,"hook_event_name":"BeforeTool","tool_name":"mcp_my_srv_do","tool_input":{},
 		"mcp_context":{"server_name":"my_srv","tool_name":"do","tcp":"localhost:9000"}
 	}`, cwd))
-	typed, err := decodeGemini(VariantUnknown, DetectionConfig, time.Now(), raw)
+	typed, _, err := decodeGemini(VariantUnknown, time.Now(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +795,7 @@ func TestResolveMCPGeminiNullContextFallsBackToConfig(t *testing.T) {
 		"session_id":"s","cwd":%q,"hook_event_name":"BeforeTool","tool_name":"mcp_my_srv_do","tool_input":{},
 		"mcp_context":null
 	}`, cwd))
-	typed, err := decodeGemini(VariantUnknown, DetectionConfig, time.Now(), raw)
+	typed, _, err := decodeGemini(VariantUnknown, time.Now(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}

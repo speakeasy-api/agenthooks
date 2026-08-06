@@ -30,42 +30,43 @@ type codexIn struct {
 	TurnID string `json:"turn_id"`
 }
 
-func decodeCodex(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+func decodeCodex(v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	var in codexIn
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
 	kind, ok := codexKinds[in.HookEventName]
 	if !ok {
 		kind = KindOther
 	}
 	base := Event{
-		Provider:            ProviderCodex,
-		Variant:             v,
-		NativeName:          in.HookEventName,
-		Kind:                kind,
-		Time:                now,
-		DetectionConfidence: conf,
+		Provider:   ProviderCodex,
+		Variant:    v,
+		NativeName: in.HookEventName,
+		Kind:       kind,
+		Time:       now,
 		Session: SessionInfo{
-			ID:             in.SessionID,
-			TurnID:         in.TurnID,
-			CWD:            in.CWD,
-			WorkspaceRoots: rootsFor(in.CWD),
-			TranscriptPath: in.TranscriptPath,
-			Model:          in.Model,
-			PermissionMode: in.PermissionMode,
+			ID:     in.SessionID,
+			TurnID: in.TurnID,
+			CWD:    in.CWD,
+			Model:  in.Model,
 		},
 		Raw: json.RawMessage(payload),
 	}
 	if in.AgentID != "" || in.AgentType != "" {
 		base.Agent = &AgentInfo{ID: in.AgentID, Type: in.AgentType}
 	}
-	return buildClaudeShaped(base, &in.claudeIn), nil
+	local := LocalSession{
+		TranscriptPath: in.TranscriptPath,
+		WorkspaceRoots: rootsFor(in.CWD),
+		PermissionMode: in.PermissionMode,
+	}
+	return buildClaudeShaped(base, &in.claudeIn), local, nil
 }
 
 // decodeCodexNotify handles the legacy `codex notify` transport: kebab-case
 // JSON passed in argv rather than on stdin. Mapped to KindNotification.
-func decodeCodexNotify(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+func decodeCodexNotify(v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	var in struct {
 		Type           string `json:"type"`
 		TurnID         string `json:"turn-id"`
@@ -76,20 +77,18 @@ func decodeCodexNotify(v Variant, conf DetectionConfidence, now time.Time, paylo
 		AssistantReply string `json:"assistant-reply"`
 	}
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
 	base := Event{
-		Provider:            ProviderCodex,
-		Variant:             v,
-		NativeName:          "notify:" + in.Type,
-		Kind:                KindNotification,
-		Time:                now,
-		DetectionConfidence: conf,
+		Provider:   ProviderCodex,
+		Variant:    v,
+		NativeName: "notify:" + in.Type,
+		Kind:       KindNotification,
+		Time:       now,
 		Session: SessionInfo{
-			ID:             in.ThreadID,
-			TurnID:         in.TurnID,
-			CWD:            in.CWD,
-			WorkspaceRoots: rootsFor(in.CWD),
+			ID:     in.ThreadID,
+			TurnID: in.TurnID,
+			CWD:    in.CWD,
 		},
 		Raw: json.RawMessage(payload),
 	}
@@ -97,7 +96,7 @@ func decodeCodexNotify(v Variant, conf DetectionConfidence, now time.Time, paylo
 	if msg == "" {
 		msg = in.AssistantReply
 	}
-	return &NotificationEvent{Event: base, Message: msg}, nil
+	return &NotificationEvent{Event: base, Message: msg}, LocalSession{WorkspaceRoots: rootsFor(in.CWD)}, nil
 }
 
 func encodeCodex(base *Event, d decisionCore) (wireResponse, error) {

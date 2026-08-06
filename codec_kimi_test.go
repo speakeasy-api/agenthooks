@@ -9,7 +9,7 @@ import (
 
 func TestDecodeKimiPreToolUse(t *testing.T) {
 	payload := fixture(t, "kimi/pre_tool_use.json")
-	typed, err := decodeKimi(VariantUnknown, DetectionConfig, testNow, payload)
+	typed, _, err := decodeKimi(VariantUnknown, testNow, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestDecodeKimiPreToolUse(t *testing.T) {
 
 func TestDecodeKimiPostToolUseFailure(t *testing.T) {
 	payload := fixture(t, "kimi/post_tool_use_failure.json")
-	typed, err := decodeKimi(VariantUnknown, DetectionConfig, testNow, payload)
+	typed, _, err := decodeKimi(VariantUnknown, testNow, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestDecodeKimiPostToolUseFailure(t *testing.T) {
 }
 
 func TestDecodeKimiStopAndNotification(t *testing.T) {
-	typed, err := decodeKimi(VariantUnknown, DetectionConfig, testNow, fixture(t, "kimi/stop.json"))
+	typed, _, err := decodeKimi(VariantUnknown, testNow, fixture(t, "kimi/stop.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestDecodeKimiStopAndNotification(t *testing.T) {
 		t.Errorf("stop_hook_active not surfaced: %#v", typed)
 	}
 
-	typed, err = decodeKimi(VariantUnknown, DetectionConfig, testNow, fixture(t, "kimi/notification.json"))
+	typed, _, err = decodeKimi(VariantUnknown, testNow, fixture(t, "kimi/notification.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestDecodeKimiStopAndNotification(t *testing.T) {
 }
 
 func TestDecodeKimiInterruptIsOther(t *testing.T) {
-	typed, err := decodeKimi(VariantUnknown, DetectionConfig, testNow, fixture(t, "kimi/interrupt.json"))
+	typed, _, err := decodeKimi(VariantUnknown, testNow, fixture(t, "kimi/interrupt.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

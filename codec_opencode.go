@@ -62,21 +62,21 @@ func opencodeKind(hook string) EventKind {
 // decodeOpenCodeLine decodes one NDJSON frame into a typed event. Raw is the
 // verbatim frame, so both the hook input and the mutable output object stay
 // reachable.
-func decodeOpenCodeLine(v Variant, conf DetectionConfidence, now time.Time, line []byte) (any, error) {
+func decodeOpenCodeLine(v Variant, now time.Time, line []byte) (any, LocalSession, error) {
 	var fr opencodeFrame
 	if err := json.Unmarshal(line, &fr); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
-	return decodeOpenCodeFrame(v, conf, now, &fr, line)
+	return decodeOpenCodeFrame(v, now, &fr, line)
 }
 
-func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr *opencodeFrame, raw []byte) (any, error) {
+func decodeOpenCodeFrame(v Variant, now time.Time, fr *opencodeFrame, raw []byte) (any, LocalSession, error) {
 	if fr.Hook == "" {
-		return nil, errors.New("agenthooks: opencode frame missing hook name")
+		return nil, LocalSession{}, errors.New("agenthooks: opencode frame missing hook name")
 	}
 	if fr.Hook == "message.part.updated" {
-		if ev := decodeOpenCodeToolError(v, conf, now, fr, raw); ev != nil {
-			return ev, nil
+		if ev := decodeOpenCodeToolError(v, now, fr, raw); ev != nil {
+			return ev, LocalSession{}, nil
 		}
 	}
 	var in struct {
@@ -129,27 +129,26 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 		}
 	}
 	base := Event{
-		Provider:            ProviderOpenCode,
-		Variant:             v,
-		NativeName:          fr.Hook,
-		Kind:                kind,
-		Time:                now,
-		DetectionConfidence: conf,
+		Provider:   ProviderOpenCode,
+		Variant:    v,
+		NativeName: fr.Hook,
+		Kind:       kind,
+		Time:       now,
 		Session: SessionInfo{
-			ID:             in.SessionID,
-			CWD:            cwd,
-			WorkspaceRoots: rootsFor(cwd),
+			ID:  in.SessionID,
+			CWD: cwd,
 		},
 		Raw: json.RawMessage(raw),
 	}
 	if in.ParentID != "" {
 		base.Agent = &AgentInfo{ID: in.SessionID}
 	}
+	local := LocalSession{WorkspaceRoots: rootsFor(cwd)}
 
 	switch kind {
 	case KindToolPre:
 		args := rawField(fr.Output, "args")
-		return &ToolPreEvent{Event: base, Tool: makeToolCall(base.Session, in.Tool, in.CallID, args, args)}, nil
+		return &ToolPreEvent{Event: base, Tool: makeToolCall(base.Session, in.Tool, in.CallID, args, args)}, local, nil
 	case KindToolPost, KindToolError:
 		errMsg := ""
 		if e := rawField(fr.Output, "error"); len(e) > 0 && string(e) != "null" {
@@ -166,9 +165,9 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 			Output: fr.Output,
 			Failed: errMsg != "",
 			Error:  errMsg,
-		}, nil
+		}, local, nil
 	case KindPromptSubmitted:
-		return &PromptEvent{Event: base, Prompt: opencodePromptText(fr.Output)}, nil
+		return &PromptEvent{Event: base, Prompt: opencodePromptText(fr.Output)}, local, nil
 	case KindStop, KindSubagentStop:
 		var usage *Usage
 		if u := in.Usage; u != nil {
@@ -180,33 +179,33 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 				}
 			}
 		}
-		return &StopEvent{Event: base, FinalMessage: in.FinalMessage, Usage: usage}, nil
+		return &StopEvent{Event: base, FinalMessage: in.FinalMessage, Usage: usage}, local, nil
 	case KindSubagentStart:
-		return &SubagentStartEvent{Event: base}, nil
+		return &SubagentStartEvent{Event: base}, local, nil
 	case KindPermission:
-		return &PermissionEvent{Event: base, Tool: makeToolCall(base.Session, in.Tool, in.CallID, nil, nil)}, nil
+		return &PermissionEvent{Event: base, Tool: makeToolCall(base.Session, in.Tool, in.CallID, nil, nil)}, local, nil
 	case KindSessionStart:
-		return &SessionStartEvent{Event: base}, nil
+		return &SessionStartEvent{Event: base}, local, nil
 	case KindSessionEnd:
-		return &SessionEndEvent{Event: base}, nil
+		return &SessionEndEvent{Event: base}, local, nil
 	case KindCompactPre, KindCompactPost:
-		return &CompactEvent{Event: base}, nil
+		return &CompactEvent{Event: base}, local, nil
 	case KindNotification:
-		return &NotificationEvent{Event: base, Message: in.Message}, nil
+		return &NotificationEvent{Event: base, Message: in.Message}, local, nil
 	case KindFileEdited:
-		return &FileEditedEvent{Event: base, Path: in.File}, nil
+		return &FileEditedEvent{Event: base, Path: in.File}, local, nil
 	case KindModelRequest, KindModelResponse:
-		return &ModelEvent{Event: base}, nil
+		return &ModelEvent{Event: base}, local, nil
 	}
 	ev := base
-	return &ev, nil
+	return &ev, local, nil
 }
 
 // decodeOpenCodeToolError lifts a failed tool call out of a
 // message.part.updated bus frame: tool.execute.after does not fire when a
 // tool errors, so the part's error state is the only failure signal. Frames
 // carrying any other part shape decode to nil.
-func decodeOpenCodeToolError(v Variant, conf DetectionConfidence, now time.Time, fr *opencodeFrame, raw []byte) *ToolPostEvent {
+func decodeOpenCodeToolError(v Variant, now time.Time, fr *opencodeFrame, raw []byte) *ToolPostEvent {
 	var in struct {
 		Part struct {
 			Type      string `json:"type"`
@@ -227,14 +226,13 @@ func decodeOpenCodeToolError(v Variant, conf DetectionConfidence, now time.Time,
 		return nil
 	}
 	base := Event{
-		Provider:            ProviderOpenCode,
-		Variant:             v,
-		NativeName:          fr.Hook,
-		Kind:                KindToolError,
-		Time:                now,
-		DetectionConfidence: conf,
-		Session:             SessionInfo{ID: in.Part.SessionID},
-		Raw:                 json.RawMessage(raw),
+		Provider:   ProviderOpenCode,
+		Variant:    v,
+		NativeName: fr.Hook,
+		Kind:       KindToolError,
+		Time:       now,
+		Session:    SessionInfo{ID: in.Part.SessionID},
+		Raw:        json.RawMessage(raw),
 	}
 	return &ToolPostEvent{
 		Event:  base,

@@ -56,10 +56,10 @@ type geminiMCPContext struct {
 	TCP        string   `json:"tcp"`
 }
 
-func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+func decodeGemini(v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	var in geminiIn
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
 	kind, ok := geminiKinds[in.HookEventName]
 	if !ok {
@@ -72,25 +72,26 @@ func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []
 		}
 	}
 	base := Event{
-		Provider:            ProviderGemini,
-		Variant:             v,
-		NativeName:          in.HookEventName,
-		Kind:                kind,
-		Time:                t,
-		DetectionConfidence: conf,
+		Provider:   ProviderGemini,
+		Variant:    v,
+		NativeName: in.HookEventName,
+		Kind:       kind,
+		Time:       t,
 		Session: SessionInfo{
-			ID:             in.SessionID,
-			CWD:            in.CWD,
-			WorkspaceRoots: rootsFor(in.CWD),
-			TranscriptPath: in.TranscriptPath,
-			Model:          in.Model,
+			ID:    in.SessionID,
+			CWD:   in.CWD,
+			Model: in.Model,
 		},
 		Raw: json.RawMessage(payload),
+	}
+	local := LocalSession{
+		TranscriptPath: in.TranscriptPath,
+		WorkspaceRoots: rootsFor(in.CWD),
 	}
 
 	switch kind {
 	case KindToolPre:
-		return &ToolPreEvent{Event: base, Tool: geminiToolCall(base.Session, &in)}, nil
+		return &ToolPreEvent{Event: base, Tool: geminiToolCall(base.Session, &in)}, local, nil
 	case KindToolPost:
 		// Gemini reports tool failures via tool_response.error rather than a
 		// dedicated event (§4.1); surface both on the same typed event.
@@ -109,24 +110,24 @@ func decodeGemini(v Variant, conf DetectionConfidence, now time.Time, payload []
 			Output: in.ToolResponse,
 			Failed: errMsg != "",
 			Error:  errMsg,
-		}, nil
+		}, local, nil
 	case KindPromptSubmitted:
-		return &PromptEvent{Event: base, Prompt: in.Prompt}, nil
+		return &PromptEvent{Event: base, Prompt: in.Prompt}, local, nil
 	case KindStop:
-		return &StopEvent{Event: base}, nil
+		return &StopEvent{Event: base}, local, nil
 	case KindSessionStart:
-		return &SessionStartEvent{Event: base, Source: in.Source}, nil
+		return &SessionStartEvent{Event: base, Source: in.Source}, local, nil
 	case KindSessionEnd:
-		return &SessionEndEvent{Event: base, Reason: in.Reason}, nil
+		return &SessionEndEvent{Event: base, Reason: in.Reason}, local, nil
 	case KindNotification:
-		return &NotificationEvent{Event: base, Message: in.Message}, nil
+		return &NotificationEvent{Event: base, Message: in.Message}, local, nil
 	case KindCompactPre:
-		return &CompactEvent{Event: base, Trigger: in.Trigger}, nil
+		return &CompactEvent{Event: base, Trigger: in.Trigger}, local, nil
 	case KindModelRequest, KindModelResponse:
-		return &ModelEvent{Event: base}, nil
+		return &ModelEvent{Event: base}, local, nil
 	}
 	ev := base
-	return &ev, nil
+	return &ev, local, nil
 }
 
 func geminiToolCall(session SessionInfo, in *geminiIn) ToolCall {

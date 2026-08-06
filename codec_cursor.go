@@ -68,10 +68,10 @@ type cursorIn struct {
 	Cost             *float64        `json:"cost"`
 }
 
-func decodeCursor(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+func decodeCursor(v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	var in cursorIn
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
 	kind, ok := cursorKinds[in.HookEventName]
 	if !ok {
@@ -87,30 +87,31 @@ func decodeCursor(v Variant, conf DetectionConfidence, now time.Time, payload []
 		in.TranscriptPath = os.Getenv("CURSOR_TRANSCRIPT_PATH")
 	}
 	base := Event{
-		Provider:            ProviderCursor,
-		Variant:             v,
-		NativeName:          in.HookEventName,
-		Kind:                kind,
-		Time:                now,
-		DetectionConfidence: conf,
+		Provider:   ProviderCursor,
+		Variant:    v,
+		NativeName: in.HookEventName,
+		Kind:       kind,
+		Time:       now,
 		Session: SessionInfo{
-			ID:             in.ConversationID,
-			TurnID:         in.GenerationID,
-			CWD:            cwd,
-			WorkspaceRoots: in.WorkspaceRoots,
-			TranscriptPath: in.TranscriptPath,
-			Model:          in.Model,
-			UserEmail:      in.UserEmail,
+			ID:        in.ConversationID,
+			TurnID:    in.GenerationID,
+			CWD:       cwd,
+			Model:     in.Model,
+			UserEmail: in.UserEmail,
 		},
 		Raw: json.RawMessage(payload),
 	}
 	if in.SubagentID != "" || in.SubagentType != "" {
 		base.Agent = &AgentInfo{ID: in.SubagentID, Type: in.SubagentType}
 	}
+	local := LocalSession{
+		TranscriptPath: in.TranscriptPath,
+		WorkspaceRoots: in.WorkspaceRoots,
+	}
 
 	switch kind {
 	case KindToolPre:
-		return &ToolPreEvent{Event: base, Tool: cursorToolCall(base.Session, &in)}, nil
+		return &ToolPreEvent{Event: base, Tool: cursorToolCall(base.Session, &in)}, local, nil
 	case KindToolPost, KindToolError:
 		out := in.Output
 		if len(out) == 0 {
@@ -128,9 +129,9 @@ func decodeCursor(v Variant, conf DetectionConfidence, now time.Time, payload []
 			Failed:     failed,
 			Error:      in.Error,
 			DurationMS: duration,
-		}, nil
+		}, local, nil
 	case KindPromptSubmitted:
-		return &PromptEvent{Event: base, Prompt: in.Prompt}, nil
+		return &PromptEvent{Event: base, Prompt: in.Prompt}, local, nil
 	case KindStop, KindSubagentStop:
 		return &StopEvent{
 			Event:               base,
@@ -138,22 +139,22 @@ func decodeCursor(v Variant, conf DetectionConfidence, now time.Time, payload []
 			LoopCount:           in.LoopCount,
 			FinalMessage:        in.Text,
 			Usage:               cursorUsage(&in),
-		}, nil
+		}, local, nil
 	case KindSubagentStart:
-		return &SubagentStartEvent{Event: base}, nil
+		return &SubagentStartEvent{Event: base}, local, nil
 	case KindSessionStart:
-		return &SessionStartEvent{Event: base}, nil
+		return &SessionStartEvent{Event: base}, local, nil
 	case KindSessionEnd:
-		return &SessionEndEvent{Event: base, Reason: in.Status}, nil
+		return &SessionEndEvent{Event: base, Reason: in.Status}, local, nil
 	case KindCompactPre:
-		return &CompactEvent{Event: base}, nil
+		return &CompactEvent{Event: base}, local, nil
 	case KindFileEdited:
-		return &FileEditedEvent{Event: base, Path: in.FilePath}, nil
+		return &FileEditedEvent{Event: base, Path: in.FilePath}, local, nil
 	case KindModelRequest, KindModelResponse:
-		return &ModelEvent{Event: base}, nil
+		return &ModelEvent{Event: base}, local, nil
 	}
 	ev := base
-	return &ev, nil
+	return &ev, local, nil
 }
 
 // cursorToolCall normalizes the three shapes Cursor uses for the same

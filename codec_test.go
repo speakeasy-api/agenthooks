@@ -22,7 +22,7 @@ var testNow = time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 
 func TestDecodeClaudePreToolUse(t *testing.T) {
 	payload := fixture(t, "claude/pre_tool_use.json")
-	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, payload)
+	typed, local, err := decodeClaude(VariantUnknown, testNow, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +33,11 @@ func TestDecodeClaudePreToolUse(t *testing.T) {
 	if ev.Kind != KindToolPre || ev.NativeName != "PreToolUse" || ev.Provider != ProviderClaudeCode {
 		t.Errorf("envelope wrong: %+v", ev.Event)
 	}
-	if ev.Session.ID != "sess-claude-1" || ev.Session.CWD != "/work/repo" || ev.Session.PermissionMode != "default" {
+	if ev.Session.ID != "sess-claude-1" || ev.Session.CWD != "/work/repo" {
 		t.Errorf("session wrong: %+v", ev.Session)
+	}
+	if local.PermissionMode != "default" {
+		t.Errorf("local session wrong: %+v", local)
 	}
 	if ev.Tool.Name != "Bash" || ev.Tool.Canonical != ToolShell || ev.Tool.ID != "toolu_01ABC" || ev.Tool.Synthesized {
 		t.Errorf("tool wrong: %+v", ev.Tool)
@@ -45,7 +48,7 @@ func TestDecodeClaudePreToolUse(t *testing.T) {
 }
 
 func TestDecodeClaudeMCP(t *testing.T) {
-	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, fixture(t, "claude/pre_tool_use_mcp.json"))
+	typed, _, err := decodeClaude(VariantUnknown, testNow, fixture(t, "claude/pre_tool_use_mcp.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +59,7 @@ func TestDecodeClaudeMCP(t *testing.T) {
 }
 
 func TestDecodeClaudeUnmappedEvent(t *testing.T) {
-	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, fixture(t, "claude/setup.json"))
+	typed, _, err := decodeClaude(VariantUnknown, testNow, fixture(t, "claude/setup.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +73,7 @@ func TestDecodeClaudeUnmappedEvent(t *testing.T) {
 }
 
 func TestDecodeCodex(t *testing.T) {
-	typed, err := decodeCodex(VariantUnknown, DetectionConfig, testNow, fixture(t, "codex/pre_tool_use.json"))
+	typed, _, err := decodeCodex(VariantUnknown, testNow, fixture(t, "codex/pre_tool_use.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +84,7 @@ func TestDecodeCodex(t *testing.T) {
 }
 
 func TestDecodeCodexSessionEnd(t *testing.T) {
-	typed, err := decodeCodex(VariantUnknown, DetectionConfig, testNow, []byte(`{"session_id":"sess-codex-1","cwd":"/work/repo","transcript_path":"/tmp/transcript.jsonl","hook_event_name":"SessionEnd","reason":"other"}`))
+	typed, _, err := decodeCodex(VariantUnknown, testNow, []byte(`{"session_id":"sess-codex-1","cwd":"/work/repo","transcript_path":"/tmp/transcript.jsonl","hook_event_name":"SessionEnd","reason":"other"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +98,7 @@ func TestDecodeCodexSessionEnd(t *testing.T) {
 }
 
 func TestDecodeCursorShell(t *testing.T) {
-	typed, err := decodeCursor(VariantUnknown, DetectionConfig, testNow, fixture(t, "cursor/before_shell_execution.json"))
+	typed, local, err := decodeCursor(VariantUnknown, testNow, fixture(t, "cursor/before_shell_execution.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +106,8 @@ func TestDecodeCursorShell(t *testing.T) {
 	if ev.Session.ID != "conv-cursor-1" || ev.Session.TurnID != "gen-5" || ev.Session.UserEmail != "dev@example.com" {
 		t.Errorf("session wrong: %+v", ev.Session)
 	}
-	if len(ev.Session.WorkspaceRoots) != 2 {
-		t.Errorf("workspace roots wrong: %v", ev.Session.WorkspaceRoots)
+	if len(local.WorkspaceRoots) != 2 {
+		t.Errorf("workspace roots wrong: %v", local.WorkspaceRoots)
 	}
 	if ev.Tool.Canonical != ToolShell || string(ev.Tool.Input) != `{"command":"git push origin main"}` {
 		t.Errorf("shell tool wrong: %+v", ev.Tool)
@@ -115,7 +118,7 @@ func TestDecodeCursorShell(t *testing.T) {
 }
 
 func TestDecodeCursorMCPStringInput(t *testing.T) {
-	typed, err := decodeCursor(VariantUnknown, DetectionConfig, testNow, fixture(t, "cursor/before_mcp_execution.json"))
+	typed, _, err := decodeCursor(VariantUnknown, testNow, fixture(t, "cursor/before_mcp_execution.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +142,7 @@ func TestDecodeCursorMCPStringInput(t *testing.T) {
 }
 
 func TestDecodeCursorStopLoopCount(t *testing.T) {
-	typed, err := decodeCursor(VariantUnknown, DetectionConfig, testNow, fixture(t, "cursor/stop.json"))
+	typed, _, err := decodeCursor(VariantUnknown, testNow, fixture(t, "cursor/stop.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +153,7 @@ func TestDecodeCursorStopLoopCount(t *testing.T) {
 }
 
 func TestDecodeGeminiTimestampAndError(t *testing.T) {
-	typed, err := decodeGemini(VariantUnknown, DetectionConfig, testNow, fixture(t, "gemini/before_tool.json"))
+	typed, _, err := decodeGemini(VariantUnknown, testNow, fixture(t, "gemini/before_tool.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +165,7 @@ func TestDecodeGeminiTimestampAndError(t *testing.T) {
 		t.Errorf("run_shell_command should classify as shell: %+v", ev.Tool)
 	}
 
-	typed, err = decodeGemini(VariantUnknown, DetectionConfig, testNow, fixture(t, "gemini/after_tool_error.json"))
+	typed, _, err = decodeGemini(VariantUnknown, testNow, fixture(t, "gemini/after_tool_error.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +181,7 @@ func TestDecodeGeminiMCPContext(t *testing.T) {
 		"tool_name":"mcp_wrong_split","tool_call_id":"c1","tool_input":{},
 		"mcp_context":{"server_name":"my_srv","tool_name":"do","command":"npx","args":["-y","@acme/mcp"],"cwd":"/server"}
 	}`)
-	typed, err := decodeGemini(VariantUnknown, DetectionConfig, testNow, preRaw)
+	typed, _, err := decodeGemini(VariantUnknown, testNow, preRaw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +196,7 @@ func TestDecodeGeminiMCPContext(t *testing.T) {
 		"tool_name":"mcp_outer_name","tool_call_id":"c2","tool_input":{},"tool_response":{},
 		"mcp_context":{"server_name":"remote_srv","tool_name":"find","url":"https://payload.example.com/mcp"}
 	}`)
-	typed, err = decodeGemini(VariantUnknown, DetectionConfig, testNow, postRaw)
+	typed, _, err = decodeGemini(VariantUnknown, testNow, postRaw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +208,7 @@ func TestDecodeGeminiMCPContext(t *testing.T) {
 }
 
 func TestDecodeOpenCodeFrames(t *testing.T) {
-	typed, err := decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/tool_execute_before.json"))
+	typed, _, err := decodeOpenCodeLine(VariantUnknown, testNow, fixture(t, "opencode/tool_execute_before.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +221,7 @@ func TestDecodeOpenCodeFrames(t *testing.T) {
 		t.Errorf("args not projected into Input: %s", ev.Tool.Input)
 	}
 
-	typed, err = decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/chat_message.json"))
+	typed, _, err = decodeOpenCodeLine(VariantUnknown, testNow, fixture(t, "opencode/chat_message.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +230,7 @@ func TestDecodeOpenCodeFrames(t *testing.T) {
 		t.Errorf("prompt text wrong: %q", prompt.Prompt)
 	}
 
-	typed, err = decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/session_idle.json"))
+	typed, _, err = decodeOpenCodeLine(VariantUnknown, testNow, fixture(t, "opencode/session_idle.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +260,7 @@ func TestDecodeOpenCodeFrames(t *testing.T) {
 		t.Errorf("usage cost wrong: %v", got)
 	}
 
-	typed, err = decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/message_part_updated_tool_error.json"))
+	typed, _, err = decodeOpenCodeLine(VariantUnknown, testNow, fixture(t, "opencode/message_part_updated_tool_error.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

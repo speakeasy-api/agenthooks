@@ -55,26 +55,24 @@ type kimiIn struct {
 	Body             string          `json:"body"`
 }
 
-func decodeKimi(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+func decodeKimi(v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	var in kimiIn
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
 	kind, ok := kimiKinds[in.HookEventName]
 	if !ok {
 		kind = KindOther
 	}
 	base := Event{
-		Provider:            ProviderKimi,
-		Variant:             v,
-		NativeName:          in.HookEventName,
-		Kind:                kind,
-		Time:                now,
-		DetectionConfidence: conf,
+		Provider:   ProviderKimi,
+		Variant:    v,
+		NativeName: in.HookEventName,
+		Kind:       kind,
+		Time:       now,
 		Session: SessionInfo{
-			ID:             in.SessionID,
-			CWD:            in.CWD,
-			WorkspaceRoots: rootsFor(in.CWD),
+			ID:  in.SessionID,
+			CWD: in.CWD,
 		},
 		Raw: json.RawMessage(payload),
 	}
@@ -103,7 +101,7 @@ func decodeKimi(v Variant, conf DetectionConfidence, now time.Time, payload []by
 		StopHookActive: in.StopHookActive,
 		Trigger:        in.Trigger,
 	}
-	return buildClaudeShaped(base, &shaped), nil
+	return buildClaudeShaped(base, &shaped), LocalSession{WorkspaceRoots: rootsFor(in.CWD)}, nil
 }
 
 func encodeKimi(base *Event, d decisionCore) (wireResponse, error) {

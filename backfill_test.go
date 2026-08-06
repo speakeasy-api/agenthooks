@@ -40,10 +40,12 @@ func kimiPrompt(session string) []byte {
 func TestBackfillPromptSubmitted(t *testing.T) {
 	var seq []string
 	var backfilled *PromptEvent
+	var backfilledCE *ClientEvent
 	r := quietRunner(WithDedupDir(t.TempDir()))
-	r.OnPromptSubmitted(func(_ context.Context, e *PromptEvent) (PromptDecision, error) {
+	r.OnPromptSubmitted(func(ctx context.Context, e *PromptEvent) (PromptDecision, error) {
 		seq = append(seq, "prompt")
 		backfilled = e
+		backfilledCE = ClientEventFromContext(ctx)
 		// Reporting-only: this block must be discarded, not encoded.
 		return BlockPrompt("must be ignored"), nil
 	})
@@ -60,8 +62,11 @@ func TestBackfillPromptSubmitted(t *testing.T) {
 	if len(seq) != 2 || seq[0] != "prompt" || seq[1] != "tool.pre" {
 		t.Fatalf("backfill must precede the triggering event, got %v", seq)
 	}
-	if backfilled == nil || !backfilled.Backfilled || backfilled.Raw != nil || backfilled.Prompt != "" {
+	if backfilled == nil || backfilled.Raw != nil || backfilled.Prompt != "" {
 		t.Errorf("backfilled event malformed: %+v", backfilled)
+	}
+	if backfilledCE == nil || !backfilledCE.Backfilled || backfilledCE.Typed != backfilled {
+		t.Errorf("backfilled ClientEvent malformed: %+v", backfilledCE)
 	}
 	if backfilled.Session.ID != "sess-bf-1" || backfilled.Provider != ProviderKimi {
 		t.Errorf("backfilled event must inherit session identity: %+v", backfilled.Event)
@@ -90,8 +95,9 @@ func TestBackfillPromptSubmitted(t *testing.T) {
 func TestBackfillSkippedWhenPromptDelivered(t *testing.T) {
 	var prompts []bool // Backfilled flag per delivery
 	r := quietRunner(WithDedupDir(t.TempDir()))
-	r.OnPromptSubmitted(func(_ context.Context, e *PromptEvent) (PromptDecision, error) {
-		prompts = append(prompts, e.Backfilled)
+	r.OnPromptSubmitted(func(ctx context.Context, _ *PromptEvent) (PromptDecision, error) {
+		ce := ClientEventFromContext(ctx)
+		prompts = append(prompts, ce != nil && ce.Backfilled)
 		return AcceptPrompt(), nil
 	})
 

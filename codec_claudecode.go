@@ -55,37 +55,38 @@ type claudeIn struct {
 	FilePath             string          `json:"file_path"`
 }
 
-func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+func decodeClaude(v Variant, now time.Time, payload []byte) (any, LocalSession, error) {
 	var in claudeIn
 	if err := json.Unmarshal(payload, &in); err != nil {
-		return nil, err
+		return nil, LocalSession{}, err
 	}
 	kind, ok := claudeKinds[in.HookEventName]
 	if !ok {
 		kind = KindOther
 	}
 	base := Event{
-		Provider:            ProviderClaudeCode,
-		Variant:             v,
-		NativeName:          in.HookEventName,
-		Kind:                kind,
-		Time:                now,
-		DetectionConfidence: conf,
+		Provider:   ProviderClaudeCode,
+		Variant:    v,
+		NativeName: in.HookEventName,
+		Kind:       kind,
+		Time:       now,
 		Session: SessionInfo{
-			ID:             in.SessionID,
-			TurnID:         in.PromptID,
-			CWD:            in.CWD,
-			WorkspaceRoots: rootsFor(in.CWD),
-			TranscriptPath: in.TranscriptPath,
-			Model:          in.Model,
-			PermissionMode: in.PermissionMode,
+			ID:     in.SessionID,
+			TurnID: in.PromptID,
+			CWD:    in.CWD,
+			Model:  in.Model,
 		},
 		Raw: json.RawMessage(payload),
 	}
 	if in.AgentID != "" || in.AgentType != "" {
 		base.Agent = &AgentInfo{ID: in.AgentID, Type: in.AgentType}
 	}
-	return buildClaudeShaped(base, &in), nil
+	local := LocalSession{
+		TranscriptPath: in.TranscriptPath,
+		WorkspaceRoots: rootsFor(in.CWD),
+		PermissionMode: in.PermissionMode,
+	}
+	return buildClaudeShaped(base, &in), local, nil
 }
 
 // buildClaudeShaped constructs typed events from the Claude-shaped wire form.

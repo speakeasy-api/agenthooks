@@ -117,8 +117,10 @@ func (r *Runner) notePromptSeen(base *Event, prompt string) {
 // maybeBackfillPrompt synthesizes a reporting-only prompt.submitted if the
 // recovered prompt text was not reported for this session yet. The marker is
 // claimed with O_EXCL so concurrent sibling processes backfill at most once
-// per prompt.
-func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
+// per prompt. parent is the triggering event's client context: recovery
+// reads its local session (transcript path), and the synthesized dispatch
+// inherits its detection confidence and local session with Backfilled set.
+func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event, parent *ClientEvent) {
 	sess := promptSessionKey(base)
 	if sess == "" {
 		return
@@ -128,7 +130,7 @@ func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
 		return
 	}
 	cleanupStaleBackfill(dir)
-	recovered := recoverPromptText(base)
+	recovered := recoverPromptText(base, parent.Session)
 	if recovered == "" && sessionHasPromptMarker(dir, sess) {
 		// Recovery failed for a session that already reported a prompt:
 		// indistinguishable from a mid-turn repeat, so skip.
@@ -141,17 +143,22 @@ func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
 	_ = f.Close()
 
 	pe := &PromptEvent{Event: Event{
-		Provider:            base.Provider,
-		Variant:             base.Variant,
-		Kind:                KindPromptSubmitted,
-		Time:                r.now(),
-		Session:             base.Session,
-		Agent:               base.Agent,
-		DetectionConfidence: base.DetectionConfidence,
-		Backfilled:          true,
+		Provider:   base.Provider,
+		Variant:    base.Variant,
+		Kind:       KindPromptSubmitted,
+		Time:       r.now(),
+		Session:    base.Session,
+		Agent:      base.Agent,
+		backfilled: true,
 	}}
 	pe.Prompt = recovered
-	core, err := r.dispatch(ctx, pe)
+	ce := &ClientEvent{
+		Typed:               pe,
+		DetectionConfidence: parent.DetectionConfidence,
+		Backfilled:          true,
+		Session:             parent.Session,
+	}
+	core, err := r.dispatch(withClientEvent(ctx, ce), pe)
 	if err != nil {
 		r.logger.Warn("agenthooks: handler error on backfilled prompt.submitted (reporting-only, ignored)", "error", err)
 	}
@@ -164,12 +171,12 @@ func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
 // providers that need backfilling are covered; any failure (missing store,
 // format drift, unreadable process tree) yields "" — recovery is advisory,
 // never authoritative.
-func recoverPromptText(base *Event) string {
+func recoverPromptText(base *Event, local LocalSession) string {
 	switch base.Provider {
 	case ProviderKimi:
 		return kimiStoredPrompt(base.Session.ID)
 	case ProviderCursor:
-		if p := cursorTranscriptPrompt(base.Session.TranscriptPath); p != "" {
+		if p := cursorTranscriptPrompt(local.TranscriptPath); p != "" {
 			return p
 		}
 		return cursorArgvPrompt()

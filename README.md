@@ -168,11 +168,26 @@ Codex trust-hash pre-seeding.
   `Policy.Fail`). Check `e.Can(agenthooks.CapAsk)` when you care.
 - `Event.Raw` is the verbatim provider payload, always. Unknown fields decode
   into `Extra` on every native struct. Normalization is a projection.
+- The core envelope carries exactly the data that is meaningful off-machine.
+  Client-local context — detection confidence, the backfill flag, transcript
+  path, workspace roots, permission mode (`LocalSession`) — rides
+  `ClientEvent`, which the client runner installs on the handler context:
+  `agenthooks.ClientEventFromContext(ctx)` (nil under a server-side embedder
+  driving `Decide` directly).
+- `EncodeWire`/`DecodeWire` serialize typed events for transport off-machine
+  as schema-versioned, kind-tagged JSON
+  (`{"v":"agenthooks.event.v1","kind":"tool.pre","event":{...},"payload":{...}}`).
+  The schema is append-only within a version — fields are never renamed,
+  retyped, or removed — and decoding errors on unknown versions, tolerates
+  unknown fields, and zero-values missing optional ones. `Event.Ext` and
+  everything on `ClientEvent` never cross the wire. Unknown kind tags decode
+  to a bare `*Event` so relays survive version skew.
 - Provider gaps are backfilled best-effort: Kimi's and Cursor's print modes
   never fire their prompt-submitted hooks, so the runner synthesizes a
   reporting-only `prompt.submitted` before the next event that implies one —
   once per recovered prompt per session, so resumed headless turns
-  (`-p --resume`) backfill again. Backfilled events carry `Backfilled: true`,
+  (`-p --resume`) backfill again. Backfilled events carry
+  `ClientEventFromContext(ctx).Backfilled == true`,
   a nil `Raw` (nothing is fabricated), no capabilities, and any returned
   decision is discarded — the prompt already reached the model. To gate on a
   recovered prompt, record what the `PromptSubmitted` handler saw and deny in

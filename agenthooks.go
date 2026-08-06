@@ -319,10 +319,11 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 
 	var typed any
+	var local LocalSession
 	if inv.mode == "notify" {
-		typed, err = decodeCodexNotify(variant, conf, r.now(), payload)
+		typed, local, err = decodeCodexNotify(variant, r.now(), payload)
 	} else {
-		typed, err = decodePayload(provider, variant, conf, r.now(), payload)
+		typed, local, err = decodePayload(provider, variant, r.now(), payload)
 	}
 	if err != nil {
 		r.logger.Error("agenthooks: decode failed; emitting no-op", "provider", provider, "error", err)
@@ -383,7 +384,11 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			deadline = defaultDeadline
 		}
 	}
-	hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+	// The client-only context (detection confidence, backfill flag, local
+	// session paths) rides the handler context, not the envelope: handlers
+	// reach it via ClientEventFromContext.
+	ce := &ClientEvent{Typed: typed, DetectionConfidence: conf, Session: local}
+	hctx, cancel := context.WithTimeout(withClientEvent(withLogger(ctx, r.logger), ce), deadline)
 	defer cancel()
 
 	// Best-effort backfill (quirks #30, #31): deliver a reporting-only
@@ -393,7 +398,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		if pe, ok := typed.(*PromptEvent); ok {
 			r.notePromptSeen(base, pe.Prompt)
 		} else if promptImplied(base.Kind) {
-			r.maybeBackfillPrompt(hctx, base)
+			r.maybeBackfillPrompt(hctx, base, ce)
 		}
 	}
 

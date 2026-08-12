@@ -328,13 +328,17 @@ func mergeManagedJSON(existing, rendered []byte) ([]byte, error) {
 
 // hookCommand renders the shell command a provider config invokes, including
 // the argv contract (--provider, --timeout) and the in-process --filter for
-// dialects that can't express the matcher.
+// dialects that can't express the matcher. The verb is `client`: the hook
+// process forwards the event to the long-running hook server (auto-spawned
+// on first use) and relays its decision; when no server can be reached the
+// client fails open (exit 0, no output) rather than running the pipeline
+// itself.
 func hookCommand(m Manifest, p agenthooks.Provider, spec HookSpec) string {
 	parts := make([]string, 0, len(m.Command)+5)
 	for _, c := range m.Command {
 		parts = append(parts, shellQuote(c))
 	}
-	parts = append(parts, "agenthooks", "run", "--provider="+string(p))
+	parts = append(parts, "agenthooks", "client", "--provider="+string(p))
 	if spec.Timeout > 0 {
 		parts = append(parts, "--timeout="+spec.Timeout.String())
 	}

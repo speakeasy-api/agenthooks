@@ -148,10 +148,17 @@ err := install.Install(ctx, m, install.Target{
 })
 ```
 
-Generated configs bake in the argv contract (`mybinary agenthooks run
---provider=...`), per-provider timeout units, async workarounds (sync `Stop`
-on Claude cowork, backgrounder wrapper on Codex), Cursor `failClosed`, and
-Codex trust-hash pre-seeding.
+Generated configs bake in the argv contract (`mybinary agenthooks client
+--provider=...` — a lightweight per-hook client that forwards each event to
+an auto-spawned, long-running `agenthooks server` singleton (one per
+project directory) and relays its decision; when the server cannot be
+reached or spawned the client fails
+open — exit 0, no output — rather than running the pipeline itself, with
+`run` remaining the direct single-process mode), per-provider timeout
+units, async workarounds (sync `Stop` on
+Claude cowork; non-gating events are early-acked by the server), Cursor
+`failClosed`, and Codex trust-hash pre-seeding. Handlers run concurrently
+on the server, so they must be safe for concurrent use.
 
 ## Semantics worth knowing
 

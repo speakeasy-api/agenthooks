@@ -76,7 +76,10 @@ Secondary findings that shape the design (full quirk registry in §9):
 
 Non-goals for v1 (§11): auth/login flows, HTTP transport to a decision server,
 transcript capture pipelines. These are consumer concerns layered *on top of*
-this library, not inside it.
+this library, not inside it. (Observability is the exception: the opt-in
+`telemetry` package emits one OTel log record per hook event, batched and
+shipped in-process by the long-running hook server — see §11 and
+RFC-telemetry.md.)
 
 ---
 
@@ -514,7 +517,9 @@ One binary, several invocation modes, selected by argv the generated configs
 control:
 
 ```
-mybinary agenthooks run    --provider=claude-code   # process-per-event, stdin JSON (claude, codex, gemini, cursor)
+mybinary agenthooks client --provider=claude-code   # per-hook process: forwards to the hook server, relays the decision (default install)
+mybinary agenthooks server [--idle-timeout=10m] [--socket=P]  # long-running singleton hosting the pipeline (auto-spawned by client)
+mybinary agenthooks run    --provider=claude-code   # process-per-event, stdin JSON — the direct single-process mode
 mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor-agent CLI (<2026-05-20): payload in argv
 mybinary agenthooks notify --provider=codex          # legacy codex notify: kebab-case JSON in argv[1]
 mybinary agenthooks serve  --provider=opencode       # long-lived daemon for the OpenCode shim (§8)
@@ -527,6 +532,53 @@ this is a library.)
 
 Runtime responsibilities per mode:
 
+- **client/server (the language-server model)**: generated configs install
+  the `client` verb. The client reads the payload and forwards the whole
+  invocation — argv, stdin, an allowlisted env snapshot, cwd — over a
+  unix socket (Windows: named pipe) to a singleton `server` process that
+  hosts the Runner across invocations: handlers, MCP/inventory caches,
+  warm HTTP connections, and the opt-in telemetry recorder. The
+  rendezvous is derived from the consumer identity (executable path +
+  the flags before the `agenthooks` sentinel, e.g. `--config=...`) plus
+  the client's normalized working directory, so distinct deployments —
+  and distinct project locations within one deployment — get distinct
+  servers, the LSP per-workspace model (`internal/ipc`; a missing cwd
+  degrades to the location-less exe+flags identity). Socket names embed
+  only the identity hash, never the location path, so they stay within
+  sun_path limits however deep the project nests. `--socket=<endpoint>`
+  on either mode bypasses the derivation entirely and uses the endpoint
+  verbatim (locks derive from a hash of it) — for external supervision
+  (e.g. a daemon running `mybinary --config=... agenthooks server
+  --socket=...`), tests, containers, or a deliberate machine-wide
+  server; supervisors should always pass `--socket` explicitly rather
+  than relying on the server's own cwd. An overlong unix socket path is
+  rejected loudly at server startup and fails open on the client. No
+  server? The client re-execs itself as one (detached, spawn-lock
+  serialized), handing over the endpoint it just resolved via
+  `--socket` — client and spawned server always agree on the rendezvous
+  without the server re-deriving it from its own, possibly different,
+  process state — and retries for ~2 s; any failure past that fails
+  open — a warning on the debug log, exit 0 with no output, which
+  providers read as "no opinion". Providers launch hook processes from
+  the session's project directory (Claude Code documents hooks running
+  in the session cwd with `CLAUDE_PROJECT_DIR` exported; Cursor uses
+  the workspace root; Gemini's hook cwd matches `GEMINI_CWD`), so the
+  location is stable within a session; if a provider ever fires hooks
+  from varying cwds mid-session, the worst case is multiple servers
+  with split cache warmth — correctness holds, because cross-invocation
+  state (dedup markers, backfill markers, MCP inventories) is
+  file-based and shared across servers. The server is a hard
+  dependency of client mode: the client
+  never runs the pipeline itself, and `run` remains the supported direct
+  single-process mode. The server early-acks non-gating events right after decode
+  (processing continues async), shuts down after an idle period or on
+  SIGINT/SIGTERM (flushing telemetry), and drains-and-exits when a
+  client built from a newer binary connects, so upgrades roll forward on
+  the next spawn. Handlers run one-goroutine-per-connection on the
+  server, so consumer handlers in client/server installs must be safe
+  for concurrent use; the library's own cross-process state (dedup
+  markers, backfill markers, MCP inventory caches) is file-locked and
+  already safe.
 - **stdin mode**: read payload, enforce a deadline slightly under the
   provider-configured timeout (so we always answer rather than get killed
   mid-write), decode → dispatch → encode, exit with the dialect-correct code.
@@ -581,9 +633,10 @@ Per-target rendering encodes the workaround knowledge:
   correct empty-response shape is still emitted.
 - **Codex**: `hooks.json` (or `config.toml` tables) + **trust pre-seeding**:
   reimplementation of Codex's definition-hash fingerprint so installs can
-  write `[hooks.state]` trusted hashes. `Blocking: false` renders the
-  tee-to-tmpfile backgrounder wrapper (Codex parses-but-skips `async: true`).
-  Emits nothing on stdout for allow.
+  write `[hooks.state]` trusted hashes. Codex parses-but-skips
+  `async: true`, but no annotation is needed: the rendered `client` verb's
+  server early-acks non-gating events (§6), so telemetry hooks return
+  immediately anyway. Emits nothing on stdout for allow.
 - **Gemini**: `settings.json` fragment with `name`/`description` (enables
   `/hooks enable|disable` UX), timeouts converted to **milliseconds**, matcher
   dialect `mcp_server_tool`.
@@ -642,7 +695,7 @@ upstream reference. Seeded from provider research and production observation:
 | 7 | Cursor fail-open default; crashed hook allows action | `failClosed` in generated config on decision events |
 | 8 | Codex: empty stdout = allow; unknown JSON rejected; `ask`/`approve` fail the hook run | codec emits exact dialect; Ask degrades per policy |
 | 9 | Codex hooks require user trust of definition hash | install pre-seeds `[hooks.state]` trusted hashes |
-| 10 | Codex has no async hooks (`async` parsed-but-skipped) | generated backgrounder wrapper for telemetry events |
+| 10 | Codex has no async hooks (`async` parsed-but-skipped) | client mode: the hook server early-acks non-gating events after decode (§6); direct `run` mode runs them synchronously (best-effort) |
 | 11 | Gemini: exit codes ≠ docs (any non-zero except 1 blocks); stderr parsed as decision when stdout empty | runner always writes explicit JSON to stdout; never bare non-zero exits |
 | 12 | Gemini `hookSpecificOutput.tool_input` is shallow-merge | `ErrLossyUpdate` when a rewrite deletes keys; docs marker |
 | 13 | Gemini `additionalContext` HTML-escapes `<`/`>` | documented loss; optional pre-encoding |
@@ -692,21 +745,32 @@ in CI without the actual agents.
 
 - **Auth, login, identity** (browser flows, device agents, credential
   caches): consumer concerns built *on* this library. agenthooks provides the
-  hook I/O substrate those flows plug into.
+  hook I/O substrate those flows plug into. The `telemetry` package takes an
+  endpoint plus static headers as config; acquiring those credentials stays
+  a consumer concern.
 - **HTTP/decision-server transport**: a server-authoritative decision model
   is a consumer of this library — the handler body does the POST. (Claude's
   native `http` hook type is a possible later `install` target.)
+  Observability is the exception: the opt-in `telemetry` package emits one
+  OTel log record per hook event to any OTLP/HTTP logs endpoint — batched
+  in the long-running hook server (§6) and shipped in the background, so
+  the decision path never gains a network dependency.
 - **Transcript capture/dedup pipelines**: the `transcript` package gives
-  parsing primitives; pipelines belong to consumers.
+  parsing primitives; pipelines belong to consumers. The `telemetry` package
+  records event *content* (prompt text, tool IO, assistant messages) only at
+  an explicit opt-in capture level with built-in credential redaction — off
+  by default; it is telemetry, not a transcript product.
 - **A standalone hooks CLI / config-file DSL**: library-first; Go is the DSL.
 - **In-process Agent-SDK hooks** (Claude Agent SDK callbacks): different
   runtime model; possible future `sdkbridge` package.
 
 ## 12. Open questions
 
-1. **Handler concurrency**: one event per process makes this moot except in
-   OpenCode serve mode — serialize per session (matching OpenCode's sequential
-   semantics) or allow parallel with consumer opt-in?
+1. **Handler concurrency**: resolved by the client/server architecture —
+   the hook server runs one goroutine per connection, so handlers in
+   client/server installs must be goroutine-safe (documented in §6). The
+   OpenCode serve loop stays sequential per session, matching OpenCode's
+   semantics.
 2. **Version pinning**: do we gate dialect features on detected provider
    versions (Cursor camelCase era, Claude matcher version gates §Claude 2.1.19x)
    or always emit the modern + harmless-legacy superset? Proposal: superset

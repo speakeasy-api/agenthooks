@@ -47,13 +47,11 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 			continue
 		}
 		matcher, _ := agenthooks.CompileMatcher(agenthooks.ProviderCodex, spec.Tools)
+		// Codex parses-but-skips async:true (quirk #10). The old mitigation
+		// rendered --async on non-blocking hooks (a detached self re-exec);
+		// with the client verb the server's early-ack answers non-gating
+		// events immediately, so no annotation is needed.
 		command := hookCommand(m, agenthooks.ProviderCodex, spec)
-		// Codex parses-but-skips async:true (quirk #10): telemetry hooks get
-		// --async, which makes the runner re-exec itself as a detached worker
-		// and return immediately — no shell involved.
-		if !spec.Blocking {
-			command += " --async"
-		}
 		secs := timeoutSeconds(spec)
 		if event == "SessionEnd" && secs > 3 {
 			secs = 3

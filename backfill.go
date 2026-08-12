@@ -158,6 +158,10 @@ func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
 	if core.kind != DecisionNoDecision && core.kind != DecisionAcceptPrompt {
 		r.logger.Debug("agenthooks: decision on backfilled prompt.submitted discarded (event is reporting-only)")
 	}
+	// Telemetry still records the backfilled event, flagged
+	// agenthooks.event.backfilled=true; records are observational, so the
+	// discarded handler decision was never part of the record anyway.
+	r.tapAfterEvent(pe, &pe.Event, err, r.now())
 }
 
 // recoverPromptText best-effort recovers the submitted prompt. Only the

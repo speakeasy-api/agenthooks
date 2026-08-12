@@ -72,7 +72,7 @@ func TestRenderClaudePlugin(t *testing.T) {
 		t.Fatalf("PreToolUse entry wrong: %+v", pre)
 	}
 	cmd := pre[0].Hooks[0]
-	if !strings.Contains(cmd.Command, "agenthooks run --provider=claude-code") || cmd.Timeout != 30 || cmd.Async {
+	if !strings.Contains(cmd.Command, "agenthooks client --provider=claude-code") || cmd.Timeout != 30 || cmd.Async {
 		t.Errorf("PreToolUse command wrong: %+v", cmd)
 	}
 	// quirk #1: Stop is forced synchronous even for telemetry hooks.
@@ -167,7 +167,7 @@ func TestRenderGeminiMilliseconds(t *testing.T) {
 	}
 }
 
-func TestRenderCodexAsyncAndTrust(t *testing.T) {
+func TestRenderCodexClientAndTrust(t *testing.T) {
 	m := testManifest()
 	m.Hooks = append(m.Hooks, HookSpec{Kind: agenthooks.KindSessionEnd, Blocking: false, Timeout: 60 * time.Second})
 	fsys, err := Render(m, Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: "/codex-home"})
@@ -178,11 +178,12 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	if err := json.Unmarshal(readRendered(t, fsys, "hooks.json"), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	// Codex parses-but-skips async (quirk #10): telemetry hooks get --async
-	// so the runner detaches itself; no shell wrapper anywhere.
+	// Codex parses-but-skips async (quirk #10). The client verb covers it:
+	// the server early-acks non-gating events, so nothing renders --async
+	// (the retired detached self re-exec) and no shell wrapper appears.
 	post := cfg.Hooks["PostToolUse"][0].Hooks[0]
-	if !strings.HasSuffix(post.Command, " --async") || strings.Contains(post.Command, "/bin/sh") {
-		t.Errorf("non-blocking codex hook must render --async without a shell: %s", post.Command)
+	if !strings.Contains(post.Command, "agenthooks client --provider=codex") || strings.Contains(post.Command, "--async") || strings.Contains(post.Command, "/bin/sh") {
+		t.Errorf("non-blocking codex hook must render the client verb without --async or a shell: %s", post.Command)
 	}
 	preEntry := cfg.Hooks["PreToolUse"][0]
 	pre := preEntry.Hooks[0]
@@ -191,8 +192,8 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	}
 	sessionEndEntry := cfg.Hooks["SessionEnd"][0]
 	sessionEnd := sessionEndEntry.Hooks[0]
-	if sessionEnd.Timeout != 3 || !strings.HasSuffix(sessionEnd.Command, " --async") {
-		t.Errorf("SessionEnd must detach within Codex's 3-second teardown budget: %+v", sessionEnd)
+	if sessionEnd.Timeout != 3 {
+		t.Errorf("SessionEnd must keep Codex's 3-second teardown budget: %+v", sessionEnd)
 	}
 
 	// Trust state keys are "<CODEX_HOME>/hooks.json:<event_label>:<group>:<handler>"
@@ -265,7 +266,7 @@ func TestInstallIdempotentAndMergePreservesForeignEntries(t *testing.T) {
 	if !strings.Contains(string(merged), "other-tool check") || !strings.Contains(string(merged), `"FOO"`) {
 		t.Errorf("foreign config must survive merge:\n%s", merged)
 	}
-	if !strings.Contains(string(merged), "agenthooks run --provider=claude-code") {
+	if !strings.Contains(string(merged), "agenthooks client --provider=claude-code") {
 		t.Errorf("managed hooks missing after merge:\n%s", merged)
 	}
 
@@ -311,7 +312,7 @@ func TestRenderKimiTOML(t *testing.T) {
 	if !strings.Contains(toml, `event = "PreToolUse"`) || !strings.Contains(toml, `matcher = "Bash"`) {
 		t.Errorf("PreToolUse entry wrong:\n%s", toml)
 	}
-	if !strings.Contains(toml, "agenthooks run --provider=kimi-code") {
+	if !strings.Contains(toml, "agenthooks client --provider=kimi-code") {
 		t.Errorf("argv contract missing:\n%s", toml)
 	}
 	if !strings.Contains(toml, "timeout = 30") {
@@ -346,7 +347,7 @@ func TestInstallKimiMergePreservesForeignTOML(t *testing.T) {
 	if !strings.Contains(string(merged), "terminal-notifier") {
 		t.Errorf("foreign hook must survive merge:\n%s", merged)
 	}
-	if !strings.Contains(string(merged), "agenthooks run --provider=kimi-code") {
+	if !strings.Contains(string(merged), "agenthooks client --provider=kimi-code") {
 		t.Errorf("managed hooks missing after merge:\n%s", merged)
 	}
 

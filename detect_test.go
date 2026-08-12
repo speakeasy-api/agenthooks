@@ -22,6 +22,20 @@ func TestParseArgsConsumerFlagsBeforeSentinel(t *testing.T) {
 	}
 }
 
+func TestParseArgsSocketOverride(t *testing.T) {
+	t.Parallel()
+	inv, err := parseArgs([]string{"agenthooks", "client", "--provider=claude-code", "--socket=/tmp/agenthooks.sock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.socket != "/tmp/agenthooks.sock" {
+		t.Errorf("socket = %q, want %q", inv.socket, "/tmp/agenthooks.sock")
+	}
+	if _, err := parseArgs([]string{"agenthooks", "server", "--socket="}); err == nil {
+		t.Errorf("an empty --socket endpoint must be rejected")
+	}
+}
+
 func TestParseArgsNoSentinel(t *testing.T) {
 	t.Parallel()
 	inv, err := parseArgs([]string{"--provider=claude-code"})

@@ -54,6 +54,9 @@ type Runner struct {
 	anyHandlers        []func(context.Context, *Event) error
 	otherByName        map[string][]func(context.Context, *Event) error
 	interceptors       []Interceptor
+	afterEvent         afterEvent
+	telemetryShutdown  func(context.Context) error
+	spawnServer        func(preArgs []string, endpoint string) error
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
@@ -143,6 +146,7 @@ func New(opts ...Option) *Runner {
 		logger:      defaultLogger(),
 		now:         time.Now,
 		otherByName: map[string][]func(context.Context, *Event) error{},
+		spawnServer: spawnServerDetached,
 	}
 	for _, o := range opts {
 		o(r)
@@ -297,21 +301,60 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		_, _ = fmt.Fprintln(stderr, err)
 		return 64
 	}
-	if inv.mode == "serve" {
+	switch inv.mode {
+	case "serve":
 		return r.serve(ctx, inv, stdin, stdout, stderr)
+	case "server":
+		return r.serverMain(ctx, inv, stderr)
+	case "client":
+		return r.clientMain(inv, stdin, stdout, stderr)
 	}
+	return r.runEvent(ctx, inv, r.readPayload(inv, stdin), runOpts{getenv: os.Getenv}, stdout, stderr)
+}
 
-	var payload []byte
+// readPayload materializes the hook payload for run/notify/client modes:
+// argv positionals for the notify verb and --argv-payload, stdin otherwise.
+func (r *Runner) readPayload(inv *invocation, stdin io.Reader) []byte {
 	if inv.mode == "notify" || inv.argvPayload {
-		payload = []byte(inv.payload)
-	} else {
-		payload, err = io.ReadAll(io.LimitReader(stdin, maxPayloadBytes))
-		if err != nil {
-			r.logger.Error("agenthooks: reading stdin", "error", err)
-		}
+		return []byte(inv.payload)
 	}
+	payload, err := io.ReadAll(io.LimitReader(stdin, maxPayloadBytes))
+	if err != nil {
+		r.logger.Error("agenthooks: reading stdin", "error", err)
+	}
+	return payload
+}
 
-	provider, conf := detectProvider(inv, payload)
+// runOpts carries the per-invocation environment of one hook event through
+// the pipeline. getenv resolves environment lookups (the process env for
+// in-process runs, the request's forwarded snapshot on the server).
+// earlyAck, when set (server mode), is invoked with the provider's no-op
+// response as soon as a decoded event turns out to be non-gating: the
+// server replies to the client immediately and finishes processing
+// afterwards — replacing the --async re-exec quirk for client-mode installs.
+type runOpts struct {
+	getenv   func(string) string
+	earlyAck func(wire wireResponse)
+}
+
+// gatingKind reports whether an event kind can carry a decision or context
+// the provider waits for. Non-gating kinds are observe-only: their response
+// is always the provider's no-op form, so the server can acknowledge them
+// before the handlers run.
+func gatingKind(k EventKind) bool {
+	switch k {
+	case KindToolPre, KindToolPost, KindToolError, KindPermission,
+		KindPromptSubmitted, KindStop, KindSubagentStop, KindSessionStart:
+		return true
+	}
+	return false
+}
+
+// runEvent is the single-event pipeline behind the run, notify, and
+// server-side paths: detect → decode → dispatch → encode,
+// with the response written to stdout/stderr and the exit code returned.
+func (r *Runner) runEvent(ctx context.Context, inv *invocation, payload []byte, opts runOpts, stdout, stderr io.Writer) int {
+	provider, conf := detectProvider(inv, payload, opts.getenv)
 	if provider == "" {
 		r.logger.Error("agenthooks: cannot detect provider; emitting neutral no-op", "payload_bytes", len(payload))
 		_, _ = fmt.Fprint(stdout, "{}")
@@ -319,10 +362,11 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	variant := inv.variant
 	if variant == VariantUnknown {
-		variant = detectVariant(provider)
+		variant = detectVariant(provider, opts.getenv)
 	}
 
 	var typed any
+	var err error
 	if inv.mode == "notify" {
 		typed, err = decodeCodexNotify(variant, conf, r.now(), payload)
 	} else {
@@ -340,6 +384,14 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind), "tool", tool.Name, "session", base.Session.ID, "turn", base.Session.TurnID)
 	} else {
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind))
+	}
+
+	// Non-gating events cannot change the provider's behavior, so the
+	// server acknowledges them the moment they decode and processes on its
+	// own time. The response the pipeline produces below is the same no-op
+	// and is discarded by the acked caller.
+	if opts.earlyAck != nil && !gatingKind(base.Kind) {
+		opts.earlyAck(noOpResponse(provider))
 	}
 
 	// Start the launch-context inventory probe without delaying SessionStart.
@@ -442,6 +494,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			}
 		}
 	}
+	encodedAt := r.now()
 	if len(wire.Stdout) > 0 {
 		_, _ = stdout.Write(wire.Stdout)
 	}
@@ -450,6 +503,10 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		// (quirk #23); other dialects never populate Stderr.
 		_, _ = stderr.Write(wire.Stderr)
 	}
+	// Telemetry taps in after the response is on the wire: it observes the
+	// event and the hook rail's health (timing, errors) — never the
+	// decision — and can never delay or change the response.
+	r.tapAfterEvent(typed, base, herr, encodedAt)
 	return wire.ExitCode
 }
 

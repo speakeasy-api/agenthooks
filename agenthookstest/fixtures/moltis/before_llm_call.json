@@ -1,0 +1,11 @@
+{
+  "event": "BeforeLLMCall",
+  "session_key": "chat:main",
+  "provider": "lmstudio",
+  "model": "local-model",
+  "messages": [
+    {"role": "user", "content": "hello"}
+  ],
+  "tool_count": 3,
+  "iteration": 0
+}

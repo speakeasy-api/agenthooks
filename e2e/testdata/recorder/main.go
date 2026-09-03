@@ -31,6 +31,10 @@ type config struct {
 	// continuation guard (stop_hook_active) would otherwise loop forever,
 	// and the library cap only trips on a reported LoopCount.
 	ContinueInstruction string `json:"continue_instruction,omitempty"`
+	// PromptContext is added through the provider's prompt-submitted decision
+	// channel. E2E tests use it to prove the native runtime honors context, not
+	// merely that the codec serialized a response.
+	PromptContext string `json:"prompt_context,omitempty"`
 }
 
 // record is one JSONL line. Kind "tool.pre" lines are emitted twice: once by
@@ -45,6 +49,7 @@ type record struct {
 	Native     string          `json:"native"`
 	Kind       string          `json:"kind"`
 	Session    string          `json:"session_id,omitempty"`
+	TurnID     string          `json:"turn_id,omitempty"`
 	CWD        string          `json:"cwd,omitempty"`
 	Tool       string          `json:"tool,omitempty"`
 	Canonical  string          `json:"canonical,omitempty"`
@@ -74,6 +79,7 @@ func main() {
 			Native:     e.NativeName,
 			Kind:       string(e.Kind),
 			Session:    e.Session.ID,
+			TurnID:     e.Session.TurnID,
 			CWD:        e.Session.CWD,
 			Raw:        e.Raw,
 		})
@@ -88,9 +94,14 @@ func main() {
 			Native:     e.NativeName,
 			Kind:       string(e.Kind),
 			Session:    e.Session.ID,
+			TurnID:     e.Session.TurnID,
 			Prompt:     e.Prompt,
 		})
-		return agenthooks.AcceptPrompt(), nil
+		decision := agenthooks.AcceptPrompt()
+		if cfg.PromptContext != "" {
+			decision = decision.WithContext(cfg.PromptContext)
+		}
+		return decision, nil
 	})
 	r.OnToolPre(func(_ context.Context, e *agenthooks.ToolPreEvent) (agenthooks.ToolPreDecision, error) {
 		denied := cfg.Deny != "" && string(e.Tool.Canonical) == cfg.Deny
@@ -103,6 +114,7 @@ func main() {
 			Native:    e.NativeName,
 			Kind:      string(e.Kind),
 			Session:   e.Session.ID,
+			TurnID:    e.Session.TurnID,
 			Tool:      e.Tool.Name,
 			Canonical: string(e.Tool.Canonical),
 			ToolInput: e.Tool.Input,
@@ -127,6 +139,7 @@ func main() {
 			Native:        e.NativeName,
 			Kind:          string(e.Kind),
 			Session:       e.Session.ID,
+			TurnID:        e.Session.TurnID,
 			Continued:     cont,
 			PrevContinued: e.PreviouslyContinued,
 			LoopCount:     e.LoopCount,

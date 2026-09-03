@@ -95,22 +95,27 @@ func TestCapabilityDivergences(t *testing.T) {
 
 func TestQuirkRegistry(t *testing.T) {
 	qs := Quirks()
-	if len(qs) != 49 {
-		t.Fatalf("expected the 49 seeded quirks, got %d", len(qs))
+	if len(qs) != 55 {
+		t.Fatalf("expected the 55 seeded quirks, got %d", len(qs))
 	}
 	seen := map[int]bool{}
+	lastID := 0
 	for _, q := range qs {
 		if q.ID == 0 || q.Behavior == "" || q.Mitigation == "" {
 			t.Errorf("quirk %+v incomplete", q)
+		}
+		if q.ID <= lastID {
+			t.Errorf("quirk id %d follows %d; registry must be ascending", q.ID, lastID)
 		}
 		if seen[q.ID] {
 			t.Errorf("duplicate quirk id %d", q.ID)
 		}
 		seen[q.ID] = true
+		lastID = q.ID
 	}
 	// The two Copilot dialects are registered separately on purpose: the CLI
 	// rows and the VS Code rows are what make the split legible.
-	for _, p := range []Provider{ProviderCursor, ProviderCopilotCLI, ProviderVSCodeCopilot} {
+	for _, p := range []Provider{ProviderCursor, ProviderCopilotCLI, ProviderVSCodeCopilot, ProviderMoltis} {
 		if len(QuirksFor(p)) == 0 {
 			t.Errorf("%s quirks missing", p)
 		}

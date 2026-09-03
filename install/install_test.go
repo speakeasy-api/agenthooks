@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -38,6 +40,15 @@ func readRendered(t *testing.T, fsys fs.FS, path string) []byte {
 		t.Fatalf("rendered file %s: %v", path, err)
 	}
 	return b
+}
+
+func TestShellQuoteBodyQuotesCommandSeparators(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting assertion")
+	}
+	if got, want := shellQuoteBody("names=read;canonical=shell"), "'names=read;canonical=shell'"; got != want {
+		t.Fatalf("shellQuoteBody() = %q, want %q", got, want)
+	}
 }
 
 type claudeConfig struct {
@@ -222,6 +233,156 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	}
 	if !strings.Contains(trust, "BEGIN agenthooks managed hooks") || !strings.Contains(trust, "END agenthooks managed hooks") {
 		t.Errorf("codex config.toml must use the managed marker region:\n%s", trust)
+	}
+}
+
+func TestRenderCodexTrustSeedsLexicalAndResolvedSymlinkHomes(t *testing.T) {
+	root := t.TempDir()
+	realHome := filepath.Join(root, "archive", "codex-home")
+	if err := os.MkdirAll(realHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedHome := filepath.Join(root, "codex-home")
+	if err := os.Symlink(realHome, linkedHome); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	fsys, err := Render(testManifest(), Target{
+		Provider: agenthooks.ProviderCodex,
+		Scope:    ScopeUser,
+		Dir:      linkedHome,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := string(readRendered(t, fsys, "config.toml"))
+	for _, source := range []string{
+		filepath.Join(linkedHome, "hooks.json"),
+		filepath.Join(realHome, "hooks.json"),
+	} {
+		key := source + ":pre_tool_use:0:0"
+		if !strings.Contains(trust, `[hooks.state.`+tomlString(key)+`]`) {
+			t.Errorf("trust seeding missing symlink identity %q:\n%s", key, trust)
+		}
+	}
+}
+
+func TestRenderCodexTrustResolvesSymlinkParentForMissingHome(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "archive")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedParent := filepath.Join(root, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	linkedHome := filepath.Join(linkedParent, "nested", "codex-home")
+	realHome := filepath.Join(realParent, "nested", "codex-home")
+
+	fsys, err := Render(testManifest(), Target{
+		Provider: agenthooks.ProviderCodex,
+		Scope:    ScopeUser,
+		Dir:      linkedHome,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := string(readRendered(t, fsys, "config.toml"))
+	for _, source := range []string{
+		filepath.Join(linkedHome, "hooks.json"),
+		filepath.Join(realHome, "hooks.json"),
+	} {
+		key := source + ":pre_tool_use:0:0"
+		if !strings.Contains(trust, `[hooks.state.`+tomlString(key)+`]`) {
+			t.Errorf("trust seeding missing fresh-home identity %q:\n%s", key, trust)
+		}
+	}
+	if _, err := os.Stat(realHome); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Render created the target directory or returned an unexpected error: %v", err)
+	}
+}
+
+func TestInstallCodexTrustResolvesSymlinkParentForMissingHome(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "archive")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedParent := filepath.Join(root, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	linkedHome := filepath.Join(linkedParent, "nested", "codex-home")
+	realHome := filepath.Join(realParent, "nested", "codex-home")
+	target := Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: linkedHome}
+
+	if err := Install(context.Background(), testManifest(), target); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := os.ReadFile(filepath.Join(realHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		filepath.Join(linkedHome, "hooks.json"),
+		filepath.Join(realHome, "hooks.json"),
+	} {
+		key := source + ":pre_tool_use:0:0"
+		if !strings.Contains(string(trust), `[hooks.state.`+tomlString(key)+`]`) {
+			t.Errorf("installed trust missing fresh-home identity %q:\n%s", key, trust)
+		}
+	}
+}
+
+func TestInstallCodexReplacesStaleTrustOutsideManagedRegion(t *testing.T) {
+	root := t.TempDir()
+	realHome := filepath.Join(root, "archive", "codex-home")
+	if err := os.MkdirAll(realHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedHome := filepath.Join(root, "codex-home")
+	if err := os.Symlink(realHome, linkedHome); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	logicalKey := filepath.Join(linkedHome, "hooks.json") + ":pre_tool_use:1:0"
+	existing := fmt.Sprintf(`[unrelated]
+value = "preserved"
+
+[hooks.state.%s]
+trusted_hash = "sha256:stale"
+`, tomlString(logicalKey))
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreignHooks := `{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"foreign-hook check","timeout":10}]}]}}`
+	if !json.Valid([]byte(foreignHooks)) {
+		t.Fatalf("test fixture is not valid JSON: %q", foreignHooks)
+	}
+	if err := os.WriteFile(filepath.Join(realHome, "hooks.json"), []byte(foreignHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	target := Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: linkedHome}
+	if err := Install(context.Background(), testManifest(), target); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := os.ReadFile(filepath.Join(realHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := `[hooks.state.` + tomlString(logicalKey) + `]`
+	if count := strings.Count(string(merged), header); count != 1 {
+		t.Fatalf("logical trust table count = %d, want 1:\n%s", count, merged)
+	}
+	if strings.Contains(string(merged), "sha256:stale") {
+		t.Fatalf("stale trust hash survived:\n%s", merged)
+	}
+	if !strings.Contains(string(merged), `[unrelated]`) || !strings.Contains(string(merged), `value = "preserved"`) {
+		t.Fatalf("foreign TOML was not preserved:\n%s", merged)
+	}
+	if strings.Contains(string(merged), filepath.Join(linkedHome, "hooks.json")+":pre_tool_use:0:0") {
+		t.Fatalf("managed trust used the standalone rather than merged group index:\n%s", merged)
 	}
 }
 

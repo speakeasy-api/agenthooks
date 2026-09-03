@@ -1,0 +1,14 @@
+{
+  "event": "MessageReceived",
+  "session_key": "telegram:main:-100123",
+  "turn_id": "turn-shared-1",
+  "content": "please inspect the repository",
+  "channel": "telegram",
+  "channel_binding": {
+    "surface": "channel",
+    "channel_type": "telegram",
+    "account_id": "main",
+    "chat_id": "-100123"
+  },
+  "future_field": "preserved"
+}

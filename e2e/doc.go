@@ -9,6 +9,10 @@
 //
 //	AGENTHOOKS_E2E=1 go test ./e2e -v
 //
+// The Moltis test also needs an isolated OpenAI-compatible local endpoint:
+//
+//	AGENTHOOKS_E2E=1 AGENTHOOKS_MOLTIS_BASE_URL=http://127.0.0.1:11434/v1 AGENTHOOKS_MOLTIS_MODEL=my-tool-model go test ./e2e -run Moltis -v
+//
 // Tests for agents that are not installed (or when AGENTHOOKS_E2E is unset)
 // skip, so the package is inert in CI.
 package e2e

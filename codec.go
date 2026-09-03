@@ -18,8 +18,9 @@ var ErrUnsupportedDecision = errors.New("agenthooks: decision unsupported by pro
 var ErrLossyUpdate = errors.New("agenthooks: updated input removes keys; provider merge is shallow (lossy)")
 
 // wireResponse is what a codec hands back to the runtime: stdout/stderr bytes
-// plus the dialect-correct exit code. Stderr is only populated on dialects
-// whose blocking mechanism is exit-2-with-stderr-reason (Kimi, quirk #23).
+// plus the dialect-correct exit code. Stderr is populated only on dialects
+// whose blocking mechanism carries the reason there (Kimi, quirk #23;
+// Moltis, quirk #50).
 type wireResponse struct {
 	Stdout   []byte
 	Stderr   []byte
@@ -31,9 +32,9 @@ type wireResponse struct {
 // quirk #11; Claude empty stdout is not a decision, quirk #17). Codex treats
 // empty stdout as "no opinion" and rejects unknown JSON (quirk #8). Kimi
 // appends exit-0 stdout to the model context, so its no-op must be empty
-// stdout (quirk #23).
+// stdout (quirk #23). Moltis also uses empty stdout for Continue (quirk #50).
 func noOpResponse(p Provider) wireResponse {
-	if p == ProviderCodex || p == ProviderKimi {
+	if p == ProviderCodex || p == ProviderKimi || p == ProviderMoltis {
 		return wireResponse{}
 	}
 	return wireResponse{Stdout: []byte("{}")}
@@ -56,6 +57,8 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 		return decodeOpenCodeLine(v, conf, now, payload)
 	case ProviderOpenClaw:
 		return decodeOpenClawLine(v, conf, now, payload)
+	case ProviderMoltis:
+		return decodeMoltis(v, conf, now, payload)
 	case ProviderKimi:
 		return decodeKimi(v, conf, now, payload)
 	case ProviderCopilotCLI:
@@ -103,6 +106,8 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 			return wireResponse{}, err
 		}
 		return wireResponse{Stdout: out}, nil
+	case ProviderMoltis:
+		return encodeMoltis(typed, base, d)
 	case ProviderKimi:
 		return encodeKimi(base, d)
 	case ProviderCopilotCLI:

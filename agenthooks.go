@@ -1,6 +1,6 @@
 // Package agenthooks lets you author coding-agent hooks once and run them on
-// Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, and
-// OpenClaw.
+// Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code,
+// OpenClaw, and Moltis.
 //
 // A hook program is a normal Go binary: register typed handlers on a Runner
 // and hand control to Main. The library detects the invoking provider,

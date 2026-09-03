@@ -1,0 +1,12 @@
+{
+  "event": "BeforeToolCall",
+  "session_key": "chat:main",
+  "tool_name": "exec",
+  "arguments": {
+    "command": "git status --short"
+  },
+  "channel": {
+    "surface": "web",
+    "session_kind": "main"
+  }
+}

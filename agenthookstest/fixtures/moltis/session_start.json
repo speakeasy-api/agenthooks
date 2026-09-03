@@ -1,0 +1,7 @@
+{
+  "event": "SessionStart",
+  "session_key": "chat:main",
+  "channel": {
+    "surface": "web"
+  }
+}

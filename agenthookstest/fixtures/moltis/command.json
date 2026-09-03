@@ -1,0 +1,6 @@
+{
+  "event": "Command",
+  "session_key": "telegram:main:-100123",
+  "action": "new",
+  "sender_id": "user-7"
+}

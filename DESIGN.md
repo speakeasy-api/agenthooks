@@ -2,14 +2,16 @@
 
 A Go library for authoring coding-agent hooks once and running them everywhere:
 Claude Code, Cursor (IDE + CLI + cloud), OpenAI Codex, Gemini CLI, OpenCode,
-OpenClaw, Kimi Code, GitHub Copilot CLI, and Copilot Chat in VS Code.
+OpenClaw, Moltis, Kimi Code, GitHub Copilot CLI, and Copilot Chat in VS Code.
+Moltis is supported as its own shell-hook dialect; its OpenClaw import is not
+treated as wire compatibility.
 
 The core promise: **one clear interface, zero data-fidelity loss**. The library
 owns the per-provider glue, hacks, and workarounds so consumers don't have to.
 
 Research verified against provider docs, source, and changelogs as of
-**2026-07-02** (Claude Code 2.1.x, Codex hooks post-v0.124, Cursor 2.4 / CLI
-May-2026+, Gemini CLI v0.26+ GA, OpenCode 1.17.x).
+**2026-09-02** (Claude Code 2.1.x, Codex hooks post-v0.124, Cursor 2.4 / CLI
+May-2026+, Gemini CLI v0.26+ GA, OpenCode 1.17.x, Moltis 20260902.01).
 
 ---
 
@@ -25,6 +27,7 @@ de-facto industry standard.**
 | Gemini CLI | Claude-inspired with renames (`PreToolUse`→`BeforeTool`, `Stop`→`AfterAgent`), same base input fields plus `timestamp`, top-level `decision` instead of `hookSpecificOutput.permissionDecision`. Adds model-level hooks Claude lacks. |
 | Cursor | Own dialect (camelCase event names, per-event output schemas, `permission`/`user_message`/`agent_message`, `followup_message`) **plus** a Claude-compat layer that reads `.claude/settings.json` and accepts Claude response shapes. |
 | OpenCode | The outlier: in-process JS/TS plugins mutating shared objects, no spawned-process protocol at all. Requires a shim (§8). |
+| Moltis | Its own process-per-event shell dialect: internally tagged `HookPayload` JSON, TOML-frontmatter `HOOK.md` discovery, exit 1 + stderr block, and `{action:"modify",data:...}` rewrites. OpenClaw import does not make the wires compatible. |
 
 (Kimi Code, added after the initial research, ships another Claude-shaped
 dialect with renamed keys and a narrower response surface — see quirk registry
@@ -59,9 +62,9 @@ itself on both the nesting and the timeout key — see quirk registry entries
 #42–#49.)
 
 Consequence: the unified contract should be **Claude-shaped semantics with
-typed extensions**, not a lowest-common-denominator invention. Three of five
-providers natively converge on it; Cursor half-converges; only OpenCode needs a
-real bridge.
+typed extensions**, not a lowest-common-denominator invention. Providers that
+do not speak that wire, including OpenCode, OpenClaw, and Moltis, get explicit
+codecs or generated shims rather than silent lowest-common-denominator loss.
 
 Secondary findings that shape the design (full quirk registry in §9):
 
@@ -450,7 +453,7 @@ Important semantics the constructors encode:
 - **`NoDecision` ≠ `Allow`.** An empty-body response must let the provider's
   own permission flow run, not force-allow. The codecs emit the correct "no
   opinion" form per provider (`{}` on Claude/Cursor, empty stdout on Codex,
-  `{}` on Gemini to avoid stderr-parsing).
+  `{}` on Gemini to avoid stderr-parsing, empty stdout on Moltis).
 - **`Allow` never loosens.** On Claude, hook-allow still respects deny rules;
   the library documents (and tests) that `Allow` means "skip the ask", not
   "bypass policy" — matching every provider's actual behavior.
@@ -543,6 +546,7 @@ control:
 
 ```
 mybinary agenthooks run    --provider=claude-code   # process-per-event, stdin JSON (claude, codex, gemini, cursor)
+mybinary agenthooks run    --provider=moltis        # process-per-event, tagged HookPayload JSON
 mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor-agent CLI (<2026-05-20): payload in argv
 mybinary agenthooks notify --provider=codex          # legacy codex notify: kebab-case JSON in argv[1]
 mybinary agenthooks serve  --provider=opencode       # long-lived daemon for the OpenCode shim (§8)
@@ -617,6 +621,11 @@ Per-target rendering encodes the workaround knowledge:
   dialect `mcp_server_tool`.
 - **OpenCode**: writes the self-contained `.opencode/plugin/agenthooks.ts`
   shim pointing at the consumer binary (§8).
+- **Moltis**: writes one TOML-frontmatter `HOOK.md` per native event under
+  `hooks/<name>-<event>/` (user data root) or
+  `.moltis/hooks/<name>-<event>/` (project). `tool.post` and `tool.error`
+  share one `AfterToolCall` subscription; the codec selects the normalized
+  kind from `success`, so the consumer runs only once.
 - **Copilot**: `hooks.json` (plugin root `hooks/hooks.json`, or
   `.github/hooks/agenthooks.json` at project scope) with **no `matcher` field
   at all** — an empty matcher is a validation error that discards this
@@ -707,6 +716,29 @@ Coverage caveat: conversation-scope hooks require
 tool/llm hooks fire when the Gateway delegates the loop to the Claude Code CLI
 harness (Claude-CLI-OAuth model auth) — see quirks #34/#35.
 
+### 8.2 Moltis shell hooks
+
+Moltis does not use the OpenClaw plugin bridge. It discovers native
+`HOOK.md` packs and spawns their shell command once per subscribed event. The
+complete internally tagged payload arrives on stdin. An empty exit-0 response
+continues, exit 1 blocks with stderr as the reason, and
+`{"action":"modify","data":...}` rewrites the mutable part of the payload.
+
+`provider/moltis` exposes typed views for all 17 declared payload variants,
+while the codec maps the portable lifecycle subset and preserves every other
+event as `KindOther` with byte-identical `Raw`. `MessageReceived` and
+`BeforeToolCall` are the two decision surfaces used by the unified handlers.
+Prompt context is necessarily projected by appending it to inbound `content`;
+Moltis has no distinct additional-context channel. Official releases through
+20260902.02 omit both the original arguments and a call id from
+`AfterToolCall`; the codec therefore consumes a native `tool_call_id` when
+present and clearly marks its compatibility fallback as synthesized. Those
+releases also declare AgentEnd, MessageSending, and MessageSent without
+production dispatch sites. Upstream PR
+[moltis-org/moltis#1257](https://github.com/moltis-org/moltis/pull/1257) adds the
+stable ID and wires those lifecycle events; agenthooks remains compatible with
+both the released wire and the patched wire. See quirks #50–#54.
+
 ---
 
 ## 9. Quirk registry (the glue we hide)
@@ -719,6 +751,7 @@ The table below is the initially seeded set; `quirks.go` is the authoritative
 registry and has grown past it (entries #21+, including the OpenClaw rows
 #34–#37, the Copilot CLI dialect rows #38–#41, and the VS Code Copilot Chat
 rows #42–#49).
+Moltis' process wire and runtime gaps are entries #50–#54.
 
 | # | Quirk | Mitigation |
 |---|---|---|
@@ -761,6 +794,7 @@ agenthooks/
 │   ├── codex/               // codec generated from upstream JSON schemas
 │   ├── cursor/
 │   ├── gemini/
+│   ├── moltis/              // native HookPayload views (17 events)
 │   └── opencode/            // shim wire protocol + typed hook frames
 ├── install/                 // Manifest → rendered configs, trust seeding, fingerprint diffing
 ├── transcript/              // best-effort JSONL readers per provider (claude/cursor formats)

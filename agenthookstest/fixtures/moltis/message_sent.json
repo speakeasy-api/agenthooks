@@ -1,0 +1,5 @@
+{
+  "event": "MessageSent",
+  "session_key": "chat:main",
+  "content": "message delivered"
+}

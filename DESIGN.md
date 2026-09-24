@@ -661,6 +661,12 @@ OpenCode has no out-of-process hook protocol, so agenthooks ships two pieces:
    OpenCode's mutation semantics) and re-throws `error` to keep block-the-tool
    behavior. `dispose` terminates the daemon. The shim adds the timeout policy
    OpenCode lacks.
+
+   The module default-exports `{ id, setup, server }`. OpenCode 1 (≥1.3.4)
+   calls `server()` for the hooks above; OpenCode 2 calls `setup()`, which
+   translates V2 hooks and bus events into the same V1-shaped frames, so serve
+   mode is version-agnostic. V2 bus events are service-wide, so `setup()` only
+   forwards sessions seen in its own location.
 2. **`provider/opencode`** in Go: maps shim frames into unified events. The
    daemon also receives `serverUrl`/`directory`/`worktree` at startup and gets
    an optional typed client for OpenCode's HTTP API (permission replies via

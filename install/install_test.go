@@ -398,8 +398,21 @@ func TestRenderOpenCodeShim(t *testing.T) {
 			t.Errorf("shim must carry resolved MCP config via %q", want)
 		}
 	}
-	if strings.Contains(shim, "server?.headers") || strings.Contains(shim, "server?.environment") {
-		t.Error("shim must not forward MCP credentials")
+	for _, leak := range []string{"server?.headers", "server?.environment", "s?.headers", "s?.environment"} {
+		if strings.Contains(shim, leak) {
+			t.Errorf("shim must not forward MCP credentials (%s)", leak)
+		}
+	}
+	for _, want := range []string{
+		"export default { id: \"agenthooks\", setup, server: legacy }",
+		"ctx.tool.hook(\"execute.before\"", "ctx.session.hook(\"prompt\"", "ctx.event.subscribe(",
+	} {
+		if !strings.Contains(shim, want) {
+			t.Errorf("shim must carry the OpenCode 2 entrypoint via %q", want)
+		}
+	}
+	if strings.Contains(shim, "export const") {
+		t.Error("a named export loads as a second OpenCode 1 plugin")
 	}
 }
 

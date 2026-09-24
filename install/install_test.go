@@ -408,6 +408,7 @@ func TestRenderOpenCodeShim(t *testing.T) {
 		"ctx.tool.hook(\"execute.before\"", "ctx.session.hook(\"prompt\"", "ctx.event.subscribe(",
 		"ctx.mcp.transform(", "listed.every(", "own.has(sid)", "ev?.location?.directory === directory",
 		"send(\"message.part.updated\"", "case \"session.execution.succeeded\":",
+		"addUsage(usage.get(sid), d)", "case \"session.deleted\":",
 	} {
 		if !strings.Contains(shim, want) {
 			t.Errorf("shim must carry the OpenCode 2 entrypoint via %q", want)

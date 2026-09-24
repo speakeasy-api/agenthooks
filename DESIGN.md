@@ -651,7 +651,7 @@ knob for hot paths.
 
 OpenCode has no out-of-process hook protocol, so agenthooks ships two pieces:
 
-1. **A generated shim plugin** (`.opencode/plugin/agenthooks.ts`, ~100 lines,
+1. **A generated shim plugin** (`.opencode/plugin/agenthooks.ts`,
    rendered by the `install` package with the consumer command baked in, so
    there is no npm dependency): an OpenCode plugin that spawns the consumer
    binary in `agenthooks serve --provider=opencode` mode at plugin init and

@@ -912,6 +912,60 @@ func TestResolveMCPOpenCodeDetection(t *testing.T) {
 	}
 }
 
+func TestResolveMCPOpenCodeV2ServersShape(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, "opencode.json"), `{
+		"mcp": {
+			"servers": {
+				"weather": {"type": "local", "command": ["node", "weather.mjs"]},
+				"tracker": {"type": "remote", "url": "https://tracker.example.com/mcp"},
+				"off":     {"type": "remote", "url": "https://off.example.com", "disabled": true}
+			}
+		}
+	}`)
+	r := mcpTestRunner(t)
+
+	ev := mcpToolPre(ProviderOpenCode, cwd, "weather_get_forecast")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "weather" || ev.Tool.MCP.Command != "node weather.mjs" {
+		t.Errorf("opencode 2 local server not resolved: %+v", ev.Tool.MCP)
+	}
+	ev = mcpToolPre(ProviderOpenCode, cwd, "tracker_list_issues")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" {
+		t.Errorf("opencode 2 remote server not resolved: %+v", ev.Tool.MCP)
+	}
+	ev = mcpToolPre(ProviderOpenCode, cwd, "off_anything")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP != nil {
+		t.Errorf("disabled opencode 2 server must not detect: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestResolveMCPOpenCodeV1ServerNamedServers(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, "opencode.json"), `{
+		"mcp": {
+			"servers": {"type": "remote", "url": "https://servers.example.com/mcp"},
+			"other":   {"type": "remote", "url": "https://other.example.com/mcp"}
+		}
+	}`)
+	r := mcpTestRunner(t)
+
+	for tool, url := range map[string]string{
+		"servers_list": "https://servers.example.com/mcp",
+		"other_list":   "https://other.example.com/mcp",
+	} {
+		ev := mcpToolPre(ProviderOpenCode, cwd, tool)
+		r.resolveMCP(ev)
+		if ev.Tool.MCP == nil || ev.Tool.MCP.URL != url {
+			t.Errorf("%s: v1 server named servers mis-read: %+v", tool, ev.Tool.MCP)
+		}
+	}
+}
+
 func TestResolveMCPCopilotDetection(t *testing.T) {
 	home := isolateHome(t)
 	// Copilot names MCP tools <server>-<tool> verbatim with no reserved

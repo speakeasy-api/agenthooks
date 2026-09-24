@@ -584,26 +584,48 @@ func joinCommand(cmd string, args []string) string {
 }
 
 // opencodeMCPJSON is one server in opencode.json's "mcp" block: type
-// "local" (command array) or "remote" (url).
+// "local" (command array) or "remote" (url). OpenCode 1 toggles with enabled,
+// OpenCode 2 with disabled.
 type opencodeMCPJSON struct {
-	Command []string `json:"command"`
-	URL     string   `json:"url"`
-	Enabled *bool    `json:"enabled"`
+	Type     string   `json:"type"`
+	Command  []string `json:"command"`
+	URL      string   `json:"url"`
+	Enabled  *bool    `json:"enabled"`
+	Disabled *bool    `json:"disabled"`
 }
 
-// readOpenCodeConfig reads the "mcp" block of an opencode.json/.jsonc file.
+// readOpenCodeConfig reads the servers of an opencode.json/.jsonc file:
+// "mcp.<name>" (OpenCode 1) or "mcp.servers.<name>" (OpenCode 2).
 func readOpenCodeConfig(path string) []mcpConfigEntry {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
 	var doc struct {
-		MCP map[string]opencodeMCPJSON `json:"mcp"`
+		MCP map[string]json.RawMessage `json:"mcp"`
 	}
 	if err := json.Unmarshal(stripJSONCComments(data), &doc); err != nil {
 		return nil
 	}
-	return openCodeMCPEntries(doc.MCP)
+	// A V1 server may itself be named "servers"; it is one only if it looks like a server config.
+	if raw, ok := doc.MCP["servers"]; ok {
+		var probe opencodeMCPJSON
+		if json.Unmarshal(raw, &probe) != nil || (probe.Type == "" && probe.URL == "" && len(probe.Command) == 0) {
+			var servers map[string]opencodeMCPJSON
+			if json.Unmarshal(raw, &servers) != nil {
+				return nil
+			}
+			return openCodeMCPEntries(servers)
+		}
+	}
+	servers := make(map[string]opencodeMCPJSON, len(doc.MCP))
+	for name, raw := range doc.MCP {
+		var s opencodeMCPJSON
+		if json.Unmarshal(raw, &s) == nil {
+			servers[name] = s
+		}
+	}
+	return openCodeMCPEntries(servers)
 }
 
 func openCodeMCPEntries(servers map[string]opencodeMCPJSON) []mcpConfigEntry {
@@ -615,7 +637,7 @@ func openCodeMCPEntries(servers map[string]opencodeMCPJSON) []mcpConfigEntry {
 	out := make([]mcpConfigEntry, 0, len(names))
 	for _, n := range names {
 		s := servers[n]
-		if s.Enabled != nil && !*s.Enabled {
+		if (s.Enabled != nil && !*s.Enabled) || (s.Disabled != nil && *s.Disabled) {
 			continue
 		}
 		e := mcpConfigEntry{Name: n, URL: s.URL, Command: strings.Join(s.Command, " ")}

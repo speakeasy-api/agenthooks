@@ -912,6 +912,26 @@ func TestResolveMCPOpenCodeDetection(t *testing.T) {
 	}
 }
 
+func TestResolveMCPOpenCodeCodeMode(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, "opencode.json"), `{
+		"mcp": {"weather": {"type": "local", "command": ["node", "weather.mjs"]}}
+	}`)
+	r := mcpTestRunner(t)
+
+	outer := mcpToolPre(ProviderOpenCode, cwd, "execute")
+	r.resolveMCP(outer)
+	if outer.Tool.MCP != nil || outer.Tool.Canonical != ToolOther {
+		t.Errorf("code-mode execute must stay a native other tool: %+v", outer.Tool)
+	}
+	nested := mcpToolPre(ProviderOpenCode, cwd, "weather_get_forecast")
+	r.resolveMCP(nested)
+	if nested.Tool.MCP == nil || nested.Tool.MCP.Server != "weather" || nested.Tool.MCP.Tool != "get_forecast" {
+		t.Errorf("nested code-mode MCP call not resolved: %+v", nested.Tool.MCP)
+	}
+}
+
 func TestResolveMCPCopilotDetection(t *testing.T) {
 	home := isolateHome(t)
 	// Copilot names MCP tools <server>-<tool> verbatim with no reserved

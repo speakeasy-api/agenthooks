@@ -1,0 +1,5 @@
+{
+  "event": "BeforeAgentStart",
+  "session_key": "chat:main",
+  "model": "lmstudio::local-model"
+}

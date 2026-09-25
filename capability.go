@@ -89,6 +89,15 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindToolPre:         caps(CapDeny, CapAsk, CapUpdateInput),
 		KindPromptSubmitted: caps(CapDeny),
 	},
+	ProviderMoltis: {
+		// MessageReceived can block or rewrite the inbound content. Context is
+		// appended to that content by the codec because Moltis has no distinct
+		// additional-context response field. BeforeToolCall can block or replace
+		// its arguments. Moltis has no hook-level forced-allow or ask decision;
+		// all post/lifecycle events are observation-only.
+		KindPromptSubmitted: caps(CapDeny, CapAddContext),
+		KindToolPre:         caps(CapDeny, CapUpdateInput),
+	},
 	ProviderCopilotCLI: {
 		// preToolUse and permissionRequest are the only decision-capable
 		// events: deny was observed enforced end to end, and it fires even

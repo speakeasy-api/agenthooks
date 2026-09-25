@@ -1,0 +1,5 @@
+{
+  "event": "AfterCompaction",
+  "session_key": "chat:main",
+  "summary_len": 512
+}

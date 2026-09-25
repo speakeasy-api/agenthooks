@@ -42,17 +42,51 @@ func codexHome(t *testing.T) string {
 	return dir
 }
 
-func runCodex(t *testing.T, proj, home, prompt string, extraArgs ...string) string {
+func runCodex(t *testing.T, proj, home, prompt string) string {
 	t.Helper()
-	args := append([]string{
+	args := []string{
 		"exec", "--skip-git-repo-check", "-s", "workspace-write", "--ephemeral",
-	}, extraArgs...)
+	}
 	args = append(args, prompt)
 	out, err := runAgent(t, proj, []string{"CODEX_HOME=" + home}, "codex", args...)
 	if err != nil {
 		t.Fatalf("codex exec failed: %v", err)
 	}
 	return out
+}
+
+// TestCodexPortableHandler drives the same provider-free recorder, context,
+// and natural prompt as TestMoltisEventsAndDecisions. This is the incumbent
+// half of the cross-provider canary: context must reach the final answer and
+// the real shell lifecycle must normalize through the shared handler.
+func TestCodexPortableHandler(t *testing.T) {
+	requireE2E(t, "codex")
+
+	home := codexHome(t)
+	rec := newRecorderWithConfig(t, recorderConfig{
+		PromptContext: "Portable context marker: AGENTHOOKS_SHARED_CONTEXT_OK",
+	})
+	installHooks(t, rec, agenthooks.ProviderCodex, install.ScopeUser, home)
+	proj := t.TempDir()
+	marker := filepath.Join(proj, "shared-marker.txt")
+	out := runCodex(t, proj, home, portableContextShellPrompt(marker))
+
+	if !fileExists(marker) {
+		t.Fatal("Codex did not execute the shared handler's allowed shell call")
+	}
+	if !strings.Contains(out, "AGENTHOOKS_SHARED_CONTEXT_OK") {
+		t.Fatalf("Codex final response omitted the shared prompt context marker:\n%s", out)
+	}
+	evs := rec.events(t)
+	requireKinds(t, evs,
+		agenthooks.KindPromptSubmitted,
+		agenthooks.KindToolPre,
+		agenthooks.KindToolPost,
+		agenthooks.KindStop,
+	)
+	if !hasCanonicalTool(evs, agenthooks.ToolShell) {
+		t.Fatalf("Codex tool did not normalize as shell:\n%s", summarize(evs))
+	}
 }
 
 // TestCodexTrustPreseeding is the DefinitionHash verification, run as a

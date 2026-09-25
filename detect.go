@@ -12,6 +12,7 @@ import (
 //
 //	mybinary agenthooks run    --provider=claude-code            # stdin JSON
 //	mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor CLI
+//	mybinary agenthooks run    --provider=moltis                 # Moltis shell hook
 //	mybinary agenthooks notify --provider=codex                  # legacy codex notify (argv JSON)
 //	mybinary agenthooks serve  --provider=opencode               # NDJSON daemon for the shim
 type invocation struct {
@@ -32,6 +33,7 @@ var validProviders = map[Provider]bool{
 	ProviderGemini:     true,
 	ProviderOpenCode:   true,
 	ProviderOpenClaw:   true,
+	ProviderMoltis:     true,
 	ProviderKimi:       true,
 	ProviderCopilotCLI: true,
 	// VS Code ships no provider env marker and no field Claude Code doesn't
@@ -197,6 +199,11 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		return ProviderOpenClaw, true
 	case probe.Hook != "" && jsonPresent(probe.Seq):
 		return ProviderOpenCode, true
+	// Moltis process-per-event hooks carry one of its typed string event
+	// discriminators. OpenClaw's framed event above is an object; GatewayStop
+	// carries no session_key, so the event catalog is the reliable shape test.
+	case moltisNativeEvents[rawJSONString(probe.Event)]:
+		return ProviderMoltis, true
 	// Copilot is the only dialect keying the session on camelCase sessionId;
 	// its payloads carry no event-name field at all on most events, so this is
 	// the discriminator (verified against Copilot CLI 1.0.80).
@@ -222,6 +229,12 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		return ProviderClaudeCode, true
 	}
 	return "", false
+}
+
+func rawJSONString(raw json.RawMessage) string {
+	var value string
+	_ = json.Unmarshal(raw, &value)
+	return value
 }
 
 // kimiOnlyEvents are native event names Kimi fires that no Claude-shaped

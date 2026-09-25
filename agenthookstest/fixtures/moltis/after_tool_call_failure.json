@@ -1,0 +1,14 @@
+{
+  "event": "AfterToolCall",
+  "session_key": "chat:main",
+  "turn_id": "turn-shared-1",
+  "tool_call_id": "call-shared-1",
+  "tool_name": "exec",
+  "arguments": {
+    "command": "git status --short"
+  },
+  "success": false,
+  "result": {
+    "error": "permission denied"
+  }
+}

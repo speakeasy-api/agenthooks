@@ -1,0 +1,13 @@
+{
+  "event": "ToolResultPersist",
+  "session_key": "chat:main",
+  "tool_name": "exec",
+  "result": {
+    "stdout": "clean\n",
+    "exit_code": 0
+  },
+  "channel": {
+    "surface": "web",
+    "session_kind": "main"
+  }
+}

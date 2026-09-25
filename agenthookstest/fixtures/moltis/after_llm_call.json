@@ -1,0 +1,16 @@
+{
+  "event": "AfterLLMCall",
+  "session_key": "chat:main",
+  "provider": "lmstudio",
+  "model": "local-model",
+  "text": "assistant response",
+  "tool_calls": [
+    {
+      "id": "call-1",
+      "name": "exec"
+    }
+  ],
+  "input_tokens": 18,
+  "output_tokens": 7,
+  "iteration": 1
+}

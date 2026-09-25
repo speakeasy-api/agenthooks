@@ -1,0 +1,5 @@
+{
+  "event": "BeforeCompaction",
+  "session_key": "chat:main",
+  "message_count": 42
+}

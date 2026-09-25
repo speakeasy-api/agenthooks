@@ -74,6 +74,7 @@ type recorderConfig struct {
 	Deny                string `json:"deny,omitempty"`
 	RewriteCommand      string `json:"rewrite_command,omitempty"`
 	ContinueInstruction string `json:"continue_instruction,omitempty"`
+	PromptContext       string `json:"prompt_context,omitempty"`
 }
 
 // newRecorder links the recorder binary into a per-test directory and writes
@@ -97,6 +98,12 @@ func newRecorderWithConfig(t *testing.T, config recorderConfig) recorder {
 		}
 	}
 	rec := recorder{Bin: bin, Events: filepath.Join(dir, "events.jsonl")}
+	setRecorderConfig(t, rec, config)
+	return rec
+}
+
+func setRecorderConfig(t *testing.T, rec recorder, config recorderConfig) {
+	t.Helper()
 	cfg, err := json.Marshal(struct {
 		Out string `json:"out"`
 		recorderConfig
@@ -104,10 +111,9 @@ func newRecorderWithConfig(t *testing.T, config recorderConfig) recorder {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bin+".e2e.json", cfg, 0o644); err != nil {
+	if err := os.WriteFile(rec.Bin+".e2e.json", cfg, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return rec
 }
 
 // manifest is the standard hook subscription the suite installs everywhere.
@@ -197,6 +203,7 @@ type event struct {
 	Native     string          `json:"native"`
 	Kind       string          `json:"kind"`
 	Session    string          `json:"session_id"`
+	TurnID     string          `json:"turn_id"`
 	CWD        string          `json:"cwd"`
 	Tool       string          `json:"tool"`
 	Canonical  string          `json:"canonical"`
@@ -328,6 +335,14 @@ func toolFailurePrompt() string {
 func oneShotShellMarkerPrompt(markerName string) string {
 	return "Run the shell command `touch " + markerName + "` exactly once, then stop without " +
 		"checking the file or retrying the command, regardless of the result."
+}
+
+// portableContextShellPrompt is shared by the Codex and Moltis canaries.
+// Keeping the wording identical makes their context/tool receipts a meaningful
+// cross-provider comparison instead of two unrelated demos.
+func portableContextShellPrompt(markerPath string) string {
+	return "Use your shell execution tool once to run exactly `touch " + markerPath +
+		"`, then stop. Include any portable context marker appended to this message in the final answer."
 }
 
 // shellMarkerPrompt instructs the agent to run one exact shell command that

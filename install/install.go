@@ -93,6 +93,8 @@ func Render(m Manifest, t Target) (fs.FS, error) {
 		return renderOpenCode(m, t)
 	case agenthooks.ProviderOpenClaw:
 		return renderOpenClaw(m, t)
+	case agenthooks.ProviderMoltis:
+		return renderMoltis(m, t)
 	case agenthooks.ProviderKimi:
 		return renderKimi(m, t)
 	case agenthooks.ProviderCopilotCLI:
@@ -227,13 +229,50 @@ func plan(m Manifest, t Target) ([]plannedFile, error) {
 					final = merged
 				}
 			} else if isMergeableTOML(p) {
-				final = mergeManagedTOML(existing, content)
+				if t.Provider == agenthooks.ProviderCodex && filepath.Base(p) == "config.toml" {
+					final = mergeCodexTrustTOML(existing, content)
+				} else {
+					final = mergeManagedTOML(existing, content)
+				}
 			}
 			state := StateUpdate
 			if bytes.Equal(existing, final) {
 				state = StateUnchanged
 			}
 			out = append(out, plannedFile{path: p, final: final, state: state})
+		}
+	}
+	if t.Provider == agenthooks.ProviderCodex {
+		var mergedHooks []byte
+		for _, file := range out {
+			if filepath.Base(file.path) == "hooks.json" {
+				mergedHooks = file.final
+				break
+			}
+		}
+		if mergedHooks != nil {
+			renderedTrust, trustErr := renderCodexTrustForMergedHooks(t, mergedHooks)
+			if trustErr != nil {
+				return nil, trustErr
+			}
+			for index := range out {
+				if filepath.Base(out[index].path) != "config.toml" {
+					continue
+				}
+				dest := filepath.Join(t.Dir, filepath.FromSlash(out[index].path))
+				existing, readErr := os.ReadFile(dest)
+				if readErr == nil {
+					out[index].final = mergeCodexTrustTOML(existing, renderedTrust)
+					out[index].state = StateUpdate
+					if bytes.Equal(existing, out[index].final) {
+						out[index].state = StateUnchanged
+					}
+				} else {
+					out[index].final = renderedTrust
+					out[index].state = StateCreate
+				}
+				break
+			}
 		}
 	}
 	return out, nil
@@ -383,7 +422,7 @@ func shellQuoteBody(s string) string {
 		}
 		return s
 	}
-	if strings.ContainsAny(s, " \t\n\"'\\$&|<>(){}#~`!") {
+	if strings.ContainsAny(s, " \t\n\"'\\$&|;<>(){}#~`!") {
 		return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 	}
 	return s

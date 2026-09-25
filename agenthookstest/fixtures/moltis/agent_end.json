@@ -1,0 +1,8 @@
+{
+  "event": "AgentEnd",
+  "session_key": "chat:main",
+  "turn_id": "turn-shared-1",
+  "text": "finished",
+  "iterations": 3,
+  "tool_calls": 2
+}

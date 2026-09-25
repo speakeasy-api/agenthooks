@@ -1,0 +1,10 @@
+{
+  "event": "AfterToolCall",
+  "session_key": "chat:main",
+  "tool_name": "exec",
+  "success": true,
+  "result": {
+    "stdout": "clean\n",
+    "exit_code": 0
+  }
+}

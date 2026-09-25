@@ -15,7 +15,7 @@
 
 <p align="center">
   <h1 align="center"><b>agenthooks</b></h1>
-  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
+  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, Moltis, GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
   <p align="center">
     <!-- Go Doc Badge -->
     <a href="https://pkg.go.dev/github.com/speakeasy-api/agenthooks"><img alt="Go Doc" src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
@@ -122,7 +122,7 @@ degradation; stage errors return as errors.
 | Package | Purpose |
 |---|---|
 | `agenthooks` | Envelope, decisions, capability matrix, policy, runtime (`Main`/`Run`), quirk registry |
-| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,kimicode,copilot}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
+| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,moltis,kimicode,copilot}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
 | `install` | One Go `Manifest` → correct `hooks.json` / `settings.json` / `config.toml` / plugin scaffolding per provider, workarounds baked in |
 | `transcript` | Best-effort JSONL transcript readers |
 | `agenthookstest` | Fixture corpus, in-process harness, fake-provider spawner |
@@ -151,7 +151,8 @@ err := install.Install(ctx, m, install.Target{
 Generated configs bake in the argv contract (`mybinary agenthooks run
 --provider=...`), per-provider timeout units, async workarounds (sync `Stop`
 on Claude cowork, backgrounder wrapper on Codex), Cursor `failClosed`, and
-Codex trust-hash pre-seeding. Copilot configs omit `matcher` entirely: an
+Codex trust-hash pre-seeding. Moltis installs one TOML-frontmatter `HOOK.md`
+per native event under `hooks/` or `.moltis/hooks/`. Copilot configs omit `matcher` entirely: an
 empty matcher is a validation error there that discards the whole plugin hook
 config, and an absent one already means match-all.
 
@@ -235,6 +236,14 @@ config, and an absent one already means match-all.
   from becoming a total tool-call outage. `prompt.submitted` declares an empty
   capability set: Copilot drops command-hook output for `userPromptSubmitted`,
   so pretending to block there would silently allow.
+- Moltis is a distinct process-per-event dialect, not its OpenClaw import
+  surface: tagged `HookPayload` JSON arrives on stdin; empty stdout continues,
+  exit 1 plus stderr blocks, and a JSON `modify` response rewrites supported
+  payloads. `MessageReceived` can only rewrite `content`, so `WithContext`
+  appends to the original prompt rather than using a separate authority
+  channel. `AfterToolCall` carries no call id or original arguments, and a
+  crashed or timed-out consumer remains fail-open. The quirk registry exposes
+  all three limitations instead of presenting them as equivalent semantics.
 - The quirk registry (`agenthooks.Quirks()`) is the machine-readable list of
   provider glue this library hides, and doubles as the conformance-test plan.
 

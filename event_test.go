@@ -53,6 +53,11 @@ func TestCanonicalToolFor(t *testing.T) {
 		"view":   ToolFileRead,
 		"create": ToolFileWrite,
 
+		// OpenCode 2 code mode (quirk #50): a restricted interpreter, not shell.
+		"execute":                     ToolOther,
+		"opencode.list_mcp_resources": ToolOther,
+		"subagent":                    ToolTask,
+
 		// VS Code Copilot Chat. run_in_terminal and replace_string_in_file were
 		// observed in a live capture session; the rest come from the
 		// extension's wire-name table. Before these landed they all classified

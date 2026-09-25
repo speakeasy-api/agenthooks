@@ -1,0 +1,1 @@
+{"seq":9,"hook":"tool.execute.after","input":{"tool":"weather_get_forecast","sessionID":"ses_f2a23eabfffepbtIwyLNSb4O4y","callID":"call_5c7687492dd2497c8f35601f"},"output":{"args":{"city":"Paris"},"output":"Sunny, 21C in Paris"}}

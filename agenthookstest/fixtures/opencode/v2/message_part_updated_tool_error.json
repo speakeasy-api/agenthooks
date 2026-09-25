@@ -1,0 +1,1 @@
+{"seq":7,"hook":"message.part.updated","input":{"part":{"type":"tool","sessionID":"ses_f2a2419f8ffe33jLDSxUDwuEya","callID":"call_d0b1058370004dec9b4857a0","tool":"read","state":{"status":"error","error":"File not found: missing.txt","input":{"path":"missing.txt"}}}},"output":null}

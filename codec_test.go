@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -369,6 +370,101 @@ func TestDecodeOpenCodeFrames(t *testing.T) {
 	}
 	if failed.Session.ID != "oc-sess-1" || failed.Tool.Name != "read" || failed.Tool.ID != "call-9" {
 		t.Errorf("opencode tool-error identity wrong: %+v", failed.Tool)
+	}
+}
+
+// Frames the V2 shim emitted under OpenCode 2.0.16 must decode like their V1 equivalents.
+func TestDecodeOpenCodeV2Frames(t *testing.T) {
+	decode := func(name string) any {
+		t.Helper()
+		typed, err := decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/v2/"+name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return typed
+	}
+	const readSession, mcpSession = "ses_f2a2419f8ffe33jLDSxUDwuEya", "ses_f2a23eabfffepbtIwyLNSb4O4y"
+
+	if ev, ok := decode("initialize.json").(*Event); !ok || ev.NativeName != "initialize" || ev.Session.CWD != "/work" {
+		t.Errorf("initialize: %+v", ev)
+	}
+	var init struct {
+		Input map[string]json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(fixture(t, "opencode/v2/initialize.json"), &init); err != nil || init.Input["mcp"] != nil {
+		t.Errorf("initialize must omit an incomplete mcp inventory so serve falls back to config files: %v %s", err, init.Input["mcp"])
+	}
+	if ev, ok := decode("session_created.json").(*SessionStartEvent); !ok || ev.Session.ID != "ses_f2a91ce2affe0ckH6Q7MpNyuKQ" || ev.Session.CWD != "/work" {
+		t.Errorf("session.created: %+v", ev)
+	}
+	if ev, ok := decode("chat_message.json").(*PromptEvent); !ok || ev.Session.ID != readSession ||
+		!strings.Contains(ev.Prompt, "read tool on note.txt") {
+		t.Errorf("chat.message: %+v", ev)
+	}
+	if ev, ok := decode("chat_params.json").(*ModelEvent); !ok || ev.Kind != KindModelRequest || ev.Session.ID != readSession {
+		t.Errorf("chat.params: %+v", ev)
+	}
+
+	pre, ok := decode("tool_execute_before.json").(*ToolPreEvent)
+	if !ok {
+		t.Fatalf("tool.execute.before decoded as %T", pre)
+	}
+	if pre.Tool.Name != "read" || pre.Tool.Canonical != ToolFileRead || pre.Tool.ID != "call_c9ec2a10e4a64becae1ac24b" ||
+		!strings.Contains(string(pre.Tool.Input), "note.txt") {
+		t.Errorf("tool.execute.before: %+v", pre)
+	}
+	if post, ok := decode("tool_execute_after.json").(*ToolPostEvent); !ok || post.Failed || post.Tool.ID != pre.Tool.ID ||
+		!strings.Contains(string(post.Output), "hello from the file") {
+		t.Errorf("tool.execute.after: %+v", post)
+	}
+	if failed, ok := decode("message_part_updated_tool_error.json").(*ToolPostEvent); !ok || !failed.Failed ||
+		failed.Error != "File not found: missing.txt" || failed.Tool.Name != "read" || failed.Session.ID != readSession {
+		t.Errorf("tool error: %+v", failed)
+	}
+
+	outer, ok := decode("tool_execute_before_code_mode.json").(*ToolPreEvent)
+	if !ok {
+		t.Fatalf("code-mode execute decoded as %T", outer)
+	}
+	if outer.Tool.Name != "execute" || outer.Tool.Canonical != ToolOther || outer.Tool.MCP != nil {
+		t.Errorf("code-mode execute: %+v", outer)
+	}
+	nested, ok := decode("tool_execute_before_mcp_nested.json").(*ToolPreEvent)
+	if !ok {
+		t.Fatalf("nested MCP call decoded as %T", nested)
+	}
+	if nested.Tool.Name != "weather_get_forecast" || nested.Session.ID != mcpSession ||
+		!strings.Contains(string(nested.Tool.Input), "Paris") {
+		t.Errorf("nested MCP call: %+v", nested)
+	}
+	// Observed in 2.0.16: the nested call reuses the outer execute call's ID.
+	if nested.Tool.ID != outer.Tool.ID {
+		t.Errorf("nested call ID %q no longer matches execute's %q; update quirk #50", nested.Tool.ID, outer.Tool.ID)
+	}
+	if post, ok := decode("tool_execute_after_mcp_nested.json").(*ToolPostEvent); !ok || post.Failed ||
+		!strings.Contains(string(post.Output), "Sunny, 21C in Paris") {
+		t.Errorf("nested MCP result: %+v", post)
+	}
+
+	stop, ok := decode("session_idle.json").(*StopEvent)
+	if !ok || stop.Session.ID != readSession || !strings.Contains(stop.FinalMessage, "hello from the file") || stop.Usage == nil {
+		t.Fatalf("session.idle: %+v", stop)
+	}
+	for name, c := range map[string]struct {
+		got  *int
+		want int
+	}{
+		"input":       {stop.Usage.InputTokens, 8776},
+		"output":      {stop.Usage.OutputTokens, 654},
+		"cache read":  {stop.Usage.CacheReadTokens, 6912},
+		"cache write": {stop.Usage.CacheWriteTokens, 0},
+	} {
+		if c.got == nil || *c.got != c.want {
+			t.Errorf("stop usage %s = %v, want %d", name, c.got, c.want)
+		}
+	}
+	if stop.Usage.Cost == nil || *stop.Usage.Cost != 0 {
+		t.Errorf("stop usage cost = %v, want 0", stop.Usage.Cost)
 	}
 }
 

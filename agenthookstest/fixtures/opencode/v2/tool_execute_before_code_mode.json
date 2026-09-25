@@ -1,0 +1,1 @@
+{"seq":7,"hook":"tool.execute.before","input":{"tool":"execute","sessionID":"ses_f2a23eabfffepbtIwyLNSb4O4y","callID":"call_5c7687492dd2497c8f35601f"},"output":{"args":{"code":"const result = await tools.weather.get_forecast({ city: \"Paris\" });\nreturn result;"}}}

@@ -233,7 +233,7 @@ var quirkRegistry = []Quirk{
 		Mitigation: "retain the documented response shape and capability so it works once the upstream await fix lands; on affected versions treat immediate model feedback as best-effort and verify the outgoing model request rather than response text",
 		Reference:  "VS Code 1.135 toolCalling.tsx:334-345,600-649; microsoft/vscode#314118 and fix PR #331785; reproduced live 2026-08-30 with both response placements"},
 	{ID: 50, Provider: ProviderOpenCode, Versions: "observed 2.0.16", Event: KindToolPre,
-		Behavior:   "code mode offers the model no MCP tools, only a native `execute` tool running model-written JS; each MCP call inside it fires its own tool.execute.before as <server>_<tool>, so one MCP use yields an `execute` event plus the nested MCP event (and `search`/`opencode.list_mcp_resources` lookups)",
-		Mitigation: "`execute` stays ToolOther: it is a restricted interpreter with no fs/process access, so every side effect surfaces as its own hooked call; the nested call still resolves as MCP via quirk #28, and denying it fails the call inside the code",
+		Behavior:   "code mode offers the model no MCP tools, only a native `execute` tool running model-written JS; each MCP call inside it fires its own tool.execute.before as <server>_<tool>, so one MCP use yields an `execute` event plus the nested MCP event (and `search`/`opencode.list_mcp_resources` lookups). The nested call reuses the outer `execute` call's ID",
+		Mitigation: "`execute` stays ToolOther: it is a restricted interpreter with no fs/process access, so every side effect surfaces as its own hooked call; the nested call still resolves as MCP via quirk #28, and denying it fails the call inside the code. Consumers pairing pre/post by call ID must also key on tool name",
 		Reference:  "verified against opencode 2.0.16"},
 }

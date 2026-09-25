@@ -1,0 +1,1 @@
+{"seq":2,"hook":"chat.message","input":{"sessionID":"ses_f2a2419f8ffe33jLDSxUDwuEya","messageID":"msg_0d5dbe66d0013eynAKEmGu4tXT"},"output":{"message":{"id":"msg_0d5dbe66d0013eynAKEmGu4tXT","sessionID":"ses_f2a2419f8ffe33jLDSxUDwuEya"},"parts":[{"type":"text","text":"\"Use the read tool on note.txt, then use the read tool on missing.txt, then reply with what each returned.\""}]}}

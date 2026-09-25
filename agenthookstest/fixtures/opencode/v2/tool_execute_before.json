@@ -1,0 +1,1 @@
+{"seq":4,"hook":"tool.execute.before","input":{"tool":"read","sessionID":"ses_f2a2419f8ffe33jLDSxUDwuEya","callID":"call_c9ec2a10e4a64becae1ac24b"},"output":{"args":{"path":"note.txt"}}}

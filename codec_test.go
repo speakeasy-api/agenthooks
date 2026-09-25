@@ -385,6 +385,15 @@ func TestDecodeOpenCodeV2Frames(t *testing.T) {
 	}
 	const readSession, mcpSession = "ses_f2a2419f8ffe33jLDSxUDwuEya", "ses_f2a23eabfffepbtIwyLNSb4O4y"
 
+	if ev, ok := decode("initialize.json").(*Event); !ok || ev.NativeName != "initialize" || ev.Session.CWD != "/work" {
+		t.Errorf("initialize: %+v", ev)
+	}
+	var init struct {
+		Input map[string]json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(fixture(t, "opencode/v2/initialize.json"), &init); err != nil || init.Input["mcp"] != nil {
+		t.Errorf("initialize must omit an incomplete mcp inventory so serve falls back to config files: %v %s", err, init.Input["mcp"])
+	}
 	if ev, ok := decode("session_created.json").(*SessionStartEvent); !ok || ev.Session.ID != "ses_f2a91ce2affe0ckH6Q7MpNyuKQ" || ev.Session.CWD != "/work" {
 		t.Errorf("session.created: %+v", ev)
 	}
@@ -397,7 +406,10 @@ func TestDecodeOpenCodeV2Frames(t *testing.T) {
 	}
 
 	pre, ok := decode("tool_execute_before.json").(*ToolPreEvent)
-	if !ok || pre.Tool.Name != "read" || pre.Tool.Canonical != ToolFileRead || pre.Tool.ID != "call_c9ec2a10e4a64becae1ac24b" ||
+	if !ok {
+		t.Fatalf("tool.execute.before decoded as %T", pre)
+	}
+	if pre.Tool.Name != "read" || pre.Tool.Canonical != ToolFileRead || pre.Tool.ID != "call_c9ec2a10e4a64becae1ac24b" ||
 		!strings.Contains(string(pre.Tool.Input), "note.txt") {
 		t.Errorf("tool.execute.before: %+v", pre)
 	}
@@ -411,11 +423,17 @@ func TestDecodeOpenCodeV2Frames(t *testing.T) {
 	}
 
 	outer, ok := decode("tool_execute_before_code_mode.json").(*ToolPreEvent)
-	if !ok || outer.Tool.Name != "execute" || outer.Tool.Canonical != ToolOther || outer.Tool.MCP != nil {
+	if !ok {
+		t.Fatalf("code-mode execute decoded as %T", outer)
+	}
+	if outer.Tool.Name != "execute" || outer.Tool.Canonical != ToolOther || outer.Tool.MCP != nil {
 		t.Errorf("code-mode execute: %+v", outer)
 	}
 	nested, ok := decode("tool_execute_before_mcp_nested.json").(*ToolPreEvent)
-	if !ok || nested.Tool.Name != "weather_get_forecast" || nested.Session.ID != mcpSession ||
+	if !ok {
+		t.Fatalf("nested MCP call decoded as %T", nested)
+	}
+	if nested.Tool.Name != "weather_get_forecast" || nested.Session.ID != mcpSession ||
 		!strings.Contains(string(nested.Tool.Input), "Paris") {
 		t.Errorf("nested MCP call: %+v", nested)
 	}
@@ -432,10 +450,21 @@ func TestDecodeOpenCodeV2Frames(t *testing.T) {
 	if !ok || stop.Session.ID != readSession || !strings.Contains(stop.FinalMessage, "hello from the file") || stop.Usage == nil {
 		t.Fatalf("session.idle: %+v", stop)
 	}
-	for name, got := range map[string]*int{"input": stop.Usage.InputTokens, "output": stop.Usage.OutputTokens, "cache read": stop.Usage.CacheReadTokens} {
-		if got == nil || *got <= 0 {
-			t.Errorf("stop usage %s missing: %v", name, got)
+	for name, c := range map[string]struct {
+		got  *int
+		want int
+	}{
+		"input":       {stop.Usage.InputTokens, 8776},
+		"output":      {stop.Usage.OutputTokens, 654},
+		"cache read":  {stop.Usage.CacheReadTokens, 6912},
+		"cache write": {stop.Usage.CacheWriteTokens, 0},
+	} {
+		if c.got == nil || *c.got != c.want {
+			t.Errorf("stop usage %s = %v, want %d", name, c.got, c.want)
 		}
+	}
+	if stop.Usage.Cost == nil || *stop.Usage.Cost != 0 {
+		t.Errorf("stop usage cost = %v, want 0", stop.Usage.Cost)
 	}
 }
 

@@ -409,6 +409,7 @@ func TestRenderOpenCodeShim(t *testing.T) {
 		"ctx.mcp.transform(", "listed.every(", "own.has(sid)", "ev?.location?.directory === directory",
 		"send(\"message.part.updated\"", "case \"session.execution.succeeded\":",
 		"addUsage(usage.get(sid), d)", "case \"session.deleted\":",
+		"ctx.session.get({ sessionID: ev.sessionID })", "announced.has(sid)", "return announce(sid, d.parentID)",
 	} {
 		if !strings.Contains(shim, want) {
 			t.Errorf("shim must carry the OpenCode 2 entrypoint via %q", want)

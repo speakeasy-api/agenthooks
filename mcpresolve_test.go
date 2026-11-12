@@ -159,7 +159,45 @@ func isolateHome(t *testing.T) string {
 // caches can't leak across tests or into the real temp dir.
 func mcpTestRunner(t *testing.T, opts ...Option) *Runner {
 	t.Helper()
-	return quietRunner(append([]Option{WithDedupDir(t.TempDir())}, opts...)...)
+	return syncMCPRefresh(quietRunner(append([]Option{WithDedupDir(t.TempDir())}, opts...)...))
+}
+
+// syncMCPRefresh runs provider CLI refreshes in-process, so the hook that
+// starts one also sees its snapshot. Main runs them in a detached worker,
+// which the end-to-end tests below exercise.
+func syncMCPRefresh(r *Runner) *Runner {
+	r.mcpWarmStart = r.warmClaudeMCP
+	r.codexMCPWarmStart = r.warmCodexMCP
+	return r
+}
+
+// mcpListCachePath is where a runner rooted at stateDir keeps key's snapshot.
+func mcpListCachePath(t *testing.T, stateDir, key string) string {
+	t.Helper()
+	dir := filepath.Join(stateDir, "agenthooks-mcplist")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, key+".json")
+}
+
+// waitForMCPListSnapshot waits for a background refresh to land a snapshot
+// under stateDir. Hook processes hash their own environment into the cache
+// key, so the test finds the snapshot by content rather than by key.
+func waitForMCPListSnapshot(t *testing.T, stateDir string) {
+	t.Helper()
+	dir := filepath.Join(stateDir, "agenthooks-mcplist")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+		for _, path := range paths {
+			if readMCPListCache(path).HasSnapshot {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no MCP list snapshot under %s", dir)
 }
 
 type fakeClaude struct {
@@ -620,55 +658,24 @@ func TestCodexSessionStartWarmsInventoryInBackground(t *testing.T) {
 		`{"hook_event_name":"SessionStart","session_id":"s-background","cwd":%q,"source":"startup"}`,
 		project,
 	))
-	session := agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
-		codexHookPayload(t, launch, sessionPayload))
-	if err := session.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Process.Kill() })
-	sessionDone := make(chan error, 1)
-	go func() { sessionDone <- session.Wait() }()
-	select {
-	case err := <-sessionDone:
-		if err != nil {
-			t.Fatalf("Codex SessionStart failed: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		_ = session.Process.Kill()
-		t.Fatal("Codex SessionStart waited for blocked inventory discovery")
-	}
+	runAgenthooksMain(t, agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
+		codexHookPayload(t, launch, sessionPayload)), "Codex SessionStart")
 
 	waitForTestFile(t, fake.countFile)
-	_ = os.Remove(readyFile)
 	prePayload := []byte(fmt.Sprintf(
 		`{"hook_event_name":"PreToolUse","session_id":"s-background","cwd":%q,"tool_name":"mcp__background__run","tool_input":{}}`,
 		project,
 	))
-	pre := agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
-		codexHookPayload(t, launch, prePayload))
-	if err := pre.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pre.Process.Kill() })
-	preDone := make(chan error, 1)
-	go func() { preDone <- pre.Wait() }()
-	waitForTestFile(t, readyFile)
-	select {
-	case err := <-preDone:
-		t.Fatalf("Codex MCP hook did not wait for in-flight inventory: %v", err)
-	case <-time.After(250 * time.Millisecond):
+	runAgenthooksMain(t, agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
+		codexHookPayload(t, launch, prePayload)), "Codex MCP hook during refresh")
+	if data, err := os.ReadFile(resultFile); err != nil || len(data) != 0 {
+		t.Fatalf("Codex MCP hook during refresh resolved %q (err %v), want no transport yet", data, err)
 	}
 
 	writeConfig(t, fake.gateFile, "release")
-	select {
-	case err := <-preDone:
-		if err != nil {
-			t.Fatalf("Codex MCP hook failed after inventory arrived: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		_ = pre.Process.Kill()
-		t.Fatal("Codex MCP hook did not consume background inventory")
-	}
+	waitForMCPListSnapshot(t, stateDir)
+	runAgenthooksMain(t, agenthooksMainCommandForProvider(t, ProviderCodex, extra, stateDir, resultFile, readyFile,
+		codexHookPayload(t, launch, prePayload)), "Codex MCP hook after refresh")
 	data, err := os.ReadFile(resultFile)
 	if err != nil {
 		t.Fatal(err)
@@ -681,24 +688,43 @@ func TestCodexSessionStartWarmsInventoryInBackground(t *testing.T) {
 func TestCodexAsyncHookPreservesLaunchContext(t *testing.T) {
 	isolateHome(t)
 	project := t.TempDir()
+	stateDir := t.TempDir()
 	resultFile := filepath.Join(t.TempDir(), "result")
 	readyFile := filepath.Join(t.TempDir(), "ready")
-	installFakeCodex(t, `[{"name":"async","enabled":true,"transport":{"type":"streamable_http","url":"https://async.example.com/mcp"}}]`)
+	fake := installFakeCodex(t, `[{"name":"async","enabled":true,"transport":{"type":"streamable_http","url":"https://async.example.com/mcp"}}]`)
 	launch := parseCodexLaunchArgs([]string{"codex", "-c", `mcp_servers.async.url="https://async.example.com/mcp"`}, project)
 	payload := []byte(fmt.Sprintf(
 		`{"hook_event_name":"PreToolUse","session_id":"s-async","cwd":%q,"tool_name":"mcp__async__run","tool_input":{}}`,
 		project,
 	))
-	cmd := agenthooksMainCommandForProvider(t, ProviderCodex,
-		[]string{codexLaunchContextFlag, "--async"}, t.TempDir(), resultFile, readyFile,
-		codexHookPayload(t, launch, payload))
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
+	runAsync := func() string {
+		t.Helper()
+		_ = os.Remove(resultFile)
+		cmd := agenthooksMainCommandForProvider(t, ProviderCodex,
+			[]string{codexLaunchContextFlag, "--async"}, stateDir, resultFile, readyFile,
+			codexHookPayload(t, launch, payload))
+		if err := cmd.Run(); err != nil {
+			t.Fatal(err)
+		}
+		waitForTestFile(t, resultFile)
+		data, err := os.ReadFile(resultFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
 	}
-	waitForTestFile(t, resultFile)
-	data, err := os.ReadFile(resultFile)
-	if err != nil || string(data) != "https://async.example.com/mcp" {
-		t.Fatalf("async Codex transport=%q err=%v", data, err)
+
+	// The first hook finds no snapshot and starts a refresh, which must
+	// replay the launch overrides the detached hook received.
+	_ = runAsync()
+	waitForMCPListSnapshot(t, stateDir)
+	calls := fake.calls(t)
+	want := append(launch.replayArgs(), "mcp", "list", "--json")
+	if len(calls) != 1 || strings.Join(calls[0].Args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("async Codex refresh call = %+v, want args %#v", calls, want)
+	}
+	if got := runAsync(); got != "https://async.example.com/mcp" {
+		t.Fatalf("async Codex transport=%q", got)
 	}
 }
 
@@ -1385,7 +1411,7 @@ func TestResolveMCPClaudeListSharedByContext(t *testing.T) {
 	isolateHome(t)
 	count := fakeClaudeCLI(t, "Checking MCP server health...\n") // empty inventory
 	stateDir := t.TempDir()
-	r := quietRunner(WithDedupDir(stateDir))
+	r := syncMCPRefresh(quietRunner(WithDedupDir(stateDir)))
 
 	ev := mcpToolPre(ProviderClaudeCode, "", "mcp__ghost__x")
 	r.resolveMCP(ev)
@@ -1396,7 +1422,7 @@ func TestResolveMCPClaudeListSharedByContext(t *testing.T) {
 
 	// The cache is on disk: a fresh runner (separate hook process in prod)
 	// sharing the state dir must not re-probe either.
-	r2 := quietRunner(WithDedupDir(stateDir))
+	r2 := syncMCPRefresh(quietRunner(WithDedupDir(stateDir)))
 	r2.resolveMCP(mcpToolPre(ProviderClaudeCode, "", "mcp__ghost__z"))
 	if got := cliRuns(t, count); got != 1 {
 		t.Errorf("cache must be shared across processes, ran %d times", got)
@@ -1444,19 +1470,30 @@ func TestParseClaudeLaunchArgs(t *testing.T) {
 func TestClaudeSessionStartSchedulesInventoryWarm(t *testing.T) {
 	isolateHome(t)
 	project := t.TempDir()
+	stateDir := t.TempDir()
 	payload := []byte(fmt.Sprintf(
 		`{"hook_event_name":"SessionStart","session_id":"s-warm","cwd":%q,"source":"startup"}`,
 		project,
 	))
 
-	r := quietRunner()
-	var warmed string
-	r.mcpWarmStart = func(cwd string) { warmed = cwd }
-	if _, code := runWith(t, r, claudeArgs(), payload); code != 0 || warmed != project {
+	r := quietRunner(WithDedupDir(stateDir))
+	var warmed []string
+	r.mcpWarmStart = func(cwd string) { warmed = append(warmed, cwd) }
+	if _, code := runWith(t, r, claudeArgs(), payload); code != 0 || len(warmed) != 1 || warmed[0] != project {
 		t.Fatalf("SessionStart warm = %q, exit %d", warmed, code)
 	}
 
-	disabled := quietRunner(WithoutMCPListFallback())
+	// A fresh snapshot needs no refresh, even from a new hook process.
+	path := mcpListCachePath(t, stateDir, currentClaudeLaunchContext(project).cacheKey())
+	now := time.Now().Unix()
+	writeMCPListCache(path, mcpListCache{CheckedAt: now, SnapshotAt: now, HasSnapshot: true})
+	fresh := quietRunner(WithDedupDir(stateDir))
+	fresh.mcpWarmStart = func(string) { t.Fatal("fresh snapshot scheduled an inventory warm") }
+	if _, code := runWith(t, fresh, claudeArgs(), payload); code != 0 {
+		t.Fatalf("fresh SessionStart exit = %d", code)
+	}
+
+	disabled := quietRunner(WithDedupDir(t.TempDir()), WithoutMCPListFallback())
 	disabled.mcpWarmStart = func(string) { t.Fatal("disabled fallback scheduled an inventory warm") }
 	if _, code := runWith(t, disabled, claudeArgs(), payload); code != 0 {
 		t.Fatalf("disabled SessionStart exit = %d", code)
@@ -1478,55 +1515,23 @@ func TestClaudeSessionStartWarmsInventoryInBackground(t *testing.T) {
 		`{"hook_event_name":"SessionStart","session_id":"s-background","cwd":%q,"source":"startup"}`,
 		project,
 	))
-	session := agenthooksMainCommand(t, stateDir, resultFile, readyFile, sessionPayload)
-	if err := session.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = session.Process.Kill() })
-	sessionDone := make(chan error, 1)
-	go func() { sessionDone <- session.Wait() }()
-	select {
-	case err := <-sessionDone:
-		if err != nil {
-			t.Fatalf("SessionStart process failed: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		_ = session.Process.Kill()
-		t.Fatal("SessionStart waited for blocked inventory discovery")
-	}
+	runAgenthooksMain(t, agenthooksMainCommand(t, stateDir, resultFile, readyFile, sessionPayload), "SessionStart")
 
 	// The fake writes its count only after the detached worker owns the
 	// per-context lock, then waits on the gate before returning inventory.
 	waitForTestFile(t, fake.countFile)
-	_ = os.Remove(readyFile)
 	prePayload := []byte(fmt.Sprintf(
 		`{"hook_event_name":"PreToolUse","session_id":"s-background","cwd":%q,"tool_name":"mcp__background__run","tool_input":{}}`,
 		project,
 	))
-	pre := agenthooksMainCommand(t, stateDir, resultFile, readyFile, prePayload)
-	if err := pre.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pre.Process.Kill() })
-	preDone := make(chan error, 1)
-	go func() { preDone <- pre.Wait() }()
-	waitForTestFile(t, readyFile)
-	select {
-	case err := <-preDone:
-		t.Fatalf("MCP hook did not wait for in-flight inventory: %v", err)
-	case <-time.After(250 * time.Millisecond):
+	runAgenthooksMain(t, agenthooksMainCommand(t, stateDir, resultFile, readyFile, prePayload), "MCP hook during refresh")
+	if data, err := os.ReadFile(resultFile); err != nil || len(data) != 0 {
+		t.Fatalf("MCP hook during refresh resolved %q (err %v), want no transport yet", data, err)
 	}
 
 	writeConfig(t, fake.gateFile, "release")
-	select {
-	case err := <-preDone:
-		if err != nil {
-			t.Fatalf("MCP hook failed after inventory arrived: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		_ = pre.Process.Kill()
-		t.Fatal("MCP hook did not consume background inventory")
-	}
+	waitForMCPListSnapshot(t, stateDir)
+	runAgenthooksMain(t, agenthooksMainCommand(t, stateDir, resultFile, readyFile, prePayload), "MCP hook after refresh")
 	data, err := os.ReadFile(resultFile)
 	if err != nil {
 		t.Fatal(err)
@@ -1535,11 +1540,32 @@ func TestClaudeSessionStartWarmsInventoryInBackground(t *testing.T) {
 		t.Fatalf("resolved transport = %q", data)
 	}
 	if got := cliRuns(t, fake.countFile); got != 1 {
-		t.Fatalf("background warm and first MCP must share one probe, ran %d times", got)
+		t.Fatalf("hooks during an in-flight refresh must not start another probe, ran %d times", got)
 	}
 }
 
-func TestClaudeMCPWaitsForInflightReplacementSnapshot(t *testing.T) {
+// runAgenthooksMain runs one hook process and fails if it does not exit
+// promptly: no hook may wait for a provider CLI probe.
+func runAgenthooksMain(t *testing.T, cmd *exec.Cmd, name string) {
+	t.Helper()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("%s failed: %v", name, err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("%s waited for a blocked inventory probe", name)
+	}
+}
+
+func TestClaudeMCPServesStaleSnapshotWhileRefreshInFlight(t *testing.T) {
 	isolateHome(t)
 	project := t.TempDir()
 	startClaudeLaunch(t, project, "-p", "prompt")
@@ -1547,41 +1573,29 @@ func TestClaudeMCPWaitsForInflightReplacementSnapshot(t *testing.T) {
 	r := quietRunner(WithDedupDir(stateDir))
 	now := time.Now().Truncate(time.Second)
 	r.now = func() time.Time { return now }
-	launch := currentClaudeLaunchContext(project)
-	dir := filepath.Join(stateDir, "agenthooks-mcplist")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, launch.cacheKey()+".json")
+	r.mcpWarmStart = func(string) { t.Error("refresh started while another worker held the lock") }
+	path := mcpListCachePath(t, stateDir, currentClaudeLaunchContext(project).cacheKey())
+	stale := now.Add(-time.Hour).Unix()
 	writeMCPListCache(path, mcpListCache{
-		CheckedAt: now.Add(-mcpListRefreshInterval - time.Second).Unix(),
-		Entries:   []mcpConfigEntry{{Name: "shared", URL: "https://stale.example.com/mcp"}},
+		CheckedAt:   stale,
+		SnapshotAt:  stale,
+		Entries:     []mcpConfigEntry{{Name: "shared", URL: "https://stale.example.com/mcp"}},
+		HasSnapshot: true,
 	})
 	release, locked, err := tryMCPListLock(path + ".lock")
 	if err != nil || !locked {
 		t.Fatalf("holding refresh lock: locked=%v err=%v", locked, err)
 	}
+	defer release()
 
-	result := make(chan []mcpConfigEntry, 1)
-	go func() { result <- r.claudeMCPListEntries(launch) }()
-	select {
-	case entries := <-result:
-		release()
-		t.Fatalf("returned stale snapshot while refresh was in flight: %+v", entries)
-	case <-time.After(100 * time.Millisecond):
+	start := time.Now()
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__shared__run")
+	r.resolveMCP(ev)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("resolution waited %v for the in-flight refresh", elapsed)
 	}
-	writeMCPListCache(path, mcpListCache{
-		CheckedAt: now.Unix(),
-		Entries:   []mcpConfigEntry{{Name: "shared", URL: "https://fresh.example.com/mcp"}},
-	})
-	release()
-	select {
-	case entries := <-result:
-		if len(entries) != 1 || entries[0].URL != "https://fresh.example.com/mcp" {
-			t.Fatalf("replacement snapshot = %+v", entries)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("waiter did not consume replacement snapshot")
+	if ev.Tool.MCP.URL != "https://stale.example.com/mcp" {
+		t.Fatalf("stale snapshot not served: %+v", ev.Tool.MCP)
 	}
 }
 
@@ -1795,7 +1809,7 @@ func TestClaudeMCPLaunchHarnessContextsStayIsolated(t *testing.T) {
 	isolateHome(t)
 	fake := installFakeClaude(t, "shared: https://one.example.com/mcp - connected\n")
 	stateDir := t.TempDir()
-	r := quietRunner(WithDedupDir(stateDir))
+	r := syncMCPRefresh(quietRunner(WithDedupDir(stateDir)))
 
 	projectOne := t.TempDir()
 	startClaudeLaunch(t, projectOne, "-p", "prompt")
@@ -1894,27 +1908,23 @@ func TestClaudeMCPLaunchHarnessConcurrentContextsSingleflight(t *testing.T) {
 	startClaudeLaunch(t, project, "-p", "prompt")
 	stateDir := t.TempDir()
 
-	const runners = 8
+	// Every hook that finds the snapshot due may start a worker; only the
+	// one holding the context's lock probes.
+	const workers = 8
 	var wg sync.WaitGroup
-	errs := make(chan string, runners)
-	for range runners {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ev := mcpToolPre(ProviderClaudeCode, project, "mcp__shared__run")
-			quietRunner(WithDedupDir(stateDir)).resolveMCP(ev)
-			if ev.Tool.MCP.URL != "https://shared.example.com/mcp" {
-				errs <- fmt.Sprintf("%+v", ev.Tool.MCP)
-			}
-		}()
+	for range workers {
+		wg.Go(func() {
+			quietRunner(WithDedupDir(stateDir)).warmClaudeMCP(project)
+		})
 	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Errorf("concurrent resolution failed: %s", err)
-	}
 	if got := cliRuns(t, fake.countFile); got != 1 {
-		t.Fatalf("concurrent contexts must share one probe, ran %d times", got)
+		t.Fatalf("concurrent workers must share one probe, ran %d times", got)
+	}
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__shared__run")
+	syncMCPRefresh(quietRunner(WithDedupDir(stateDir))).resolveMCP(ev)
+	if ev.Tool.MCP.URL != "https://shared.example.com/mcp" || cliRuns(t, fake.countFile) != 1 {
+		t.Fatalf("worker snapshot not served: %+v (runs=%d)", ev.Tool.MCP, cliRuns(t, fake.countFile))
 	}
 }
 
@@ -1926,10 +1936,12 @@ func TestMCPListCacheCleanup(t *testing.T) {
 		filepath.Join(dir, "inventory-orphan"),
 	}
 	newPath := filepath.Join(dir, "new.json")
+	retainedPath := filepath.Join(dir, "retained.json")
 	for _, path := range oldPaths {
 		writeConfig(t, path, `{}`)
 	}
 	writeConfig(t, newPath, `{}`)
+	writeConfig(t, retainedPath, `{}`)
 	now := time.Unix(1_800_000_000, 0)
 	old := now.Add(-mcpListCacheRetention - time.Second)
 	for _, path := range oldPaths {
@@ -1940,14 +1952,20 @@ func TestMCPListCacheCleanup(t *testing.T) {
 	if err := os.Chtimes(newPath, now, now); err != nil {
 		t.Fatal(err)
 	}
-	cleanupMCPListCache(dir, now)
+	retained := now.Add(-mcpListCacheRetention + time.Hour)
+	if err := os.Chtimes(retainedPath, retained, retained); err != nil {
+		t.Fatal(err)
+	}
+	cleanupMCPListCache(dir, now, mcpListCacheRetention)
 	for _, path := range oldPaths {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expired cache artifact %q was not removed: %v", path, err)
 		}
 	}
-	if _, err := os.Stat(newPath); err != nil {
-		t.Fatalf("fresh cache was removed: %v", err)
+	for _, path := range []string{newPath, retainedPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cache inside retention %q was removed: %v", path, err)
+		}
 	}
 }
 

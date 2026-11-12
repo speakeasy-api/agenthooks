@@ -73,29 +73,24 @@ func TestMCPInventoryRetriesAfterHandlerFailure(t *testing.T) {
 	}
 }
 
-func TestMCPInventorySessionStartDoesNotWaitForProbe(t *testing.T) {
+func TestMCPInventoryNeverWaitsForProbe(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
 	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
 	stateDir := t.TempDir()
 	r := New(WithDedupDir(stateDir))
-	inventories := make(chan *MCPInventoryEvent, 2)
-	toolStarted := make(chan struct{}, 1)
+	r.mcpWarmStart = func(string) { t.Error("refresh started while another worker held the lock") }
+	inventories := make(chan *MCPInventoryEvent, 3)
 	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
 		inventories <- event
 		return nil
 	})
 	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
-		toolStarted <- struct{}{}
 		return NoDecision(), nil
 	})
 
-	launch := currentClaudeLaunchContext(cwd)
-	cacheDir := filepath.Join(stateDir, "agenthooks-mcplist")
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cachePath := filepath.Join(cacheDir, launch.cacheKey()+".json")
+	// A detached worker is mid-probe: it holds the context's lock.
+	cachePath := mcpListCachePath(t, stateDir, currentClaudeLaunchContext(cwd).cacheKey())
 	release, locked, err := tryMCPListLock(cachePath + ".lock")
 	if err != nil || !locked {
 		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
@@ -107,29 +102,19 @@ func TestMCPInventorySessionStartDoesNotWaitForProbe(t *testing.T) {
 		}
 	}()
 
-	sessionPayload := []byte(fmt.Sprintf(
+	runPromptly := func(name string, payload []byte) {
+		t.Helper()
+		start := time.Now()
+		runWith(t, r, claudeArgs(), payload)
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+			t.Fatalf("%s waited %v for the in-flight MCP probe", name, elapsed)
+		}
+	}
+	runPromptly("SessionStart", []byte(fmt.Sprintf(
 		`{"session_id":"session-warm","cwd":%q,"hook_event_name":"SessionStart","source":"startup"}`,
 		cwd,
-	))
-	sessionDone := make(chan struct{})
-	go func() {
-		runWith(t, r, claudeArgs(), sessionPayload)
-		close(sessionDone)
-	}()
-	select {
-	case <-sessionDone:
-	case <-time.After(500 * time.Millisecond):
-		release()
-		released = true
-		<-sessionDone
-		t.Fatal("SessionStart waited for the in-flight MCP probe")
-	}
-	var first *MCPInventoryEvent
-	select {
-	case first = <-inventories:
-	case <-time.After(time.Second):
-		t.Fatal("SessionStart did not emit an MCP inventory")
-	}
+	)))
+	first := <-inventories
 	if first.Complete || len(first.Servers) != 1 || first.Servers[0].Name != "configured" {
 		t.Fatalf("SessionStart inventory = %+v", first)
 	}
@@ -138,41 +123,102 @@ func TestMCPInventorySessionStartDoesNotWaitForProbe(t *testing.T) {
 		`{"session_id":"session-warm","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__plugin__run","tool_input":{}}`,
 		cwd,
 	))
-	toolDone := make(chan struct{})
-	go func() {
-		runWith(t, r, claudeArgs(), toolPayload)
-		close(toolDone)
-	}()
+	runPromptly("first MCP hook", toolPayload)
 	select {
-	case <-toolDone:
-		t.Fatal("first MCP hook did not wait for the in-flight probe")
-	case <-time.After(100 * time.Millisecond):
+	case again := <-inventories:
+		t.Fatalf("unchanged partial inventory was reported twice: %+v", again)
+	default:
 	}
+
+	// The worker lands its snapshot; the next MCP hook reports it.
+	now := time.Now().Unix()
 	writeMCPListCache(cachePath, mcpListCache{
-		CheckedAt:   time.Now().Unix(),
+		CheckedAt:   now,
+		SnapshotAt:  now,
 		Entries:     []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}},
 		HasSnapshot: true,
 	})
 	release()
 	released = true
-	select {
-	case <-toolDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first MCP hook did not resume after the inventory completed")
-	}
+	runPromptly("next MCP hook", toolPayload)
 	var second *MCPInventoryEvent
 	select {
 	case second = <-inventories:
-	case <-time.After(time.Second):
-		t.Fatal("first MCP hook did not emit the completed inventory")
+	default:
+		t.Fatal("next MCP hook did not emit the completed inventory")
 	}
 	if !second.Complete || len(second.Servers) != 2 {
-		t.Fatalf("first MCP hook inventory = %+v", second)
+		t.Fatalf("next MCP hook inventory = %+v", second)
 	}
-	select {
-	case <-toolStarted:
-	default:
-		t.Fatal("tool handler did not run after the complete inventory handler")
+}
+
+func TestMCPInventoryServesStaleSnapshotAsPartial(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+	stateDir := t.TempDir()
+	now := time.Now().Truncate(time.Second)
+	r := mcpTestRunner(t, WithDedupDir(stateDir))
+	r.now = func() time.Time { return now }
+	starts := 0
+	r.mcpWarmStart = func(string) { starts++ }
+	cachePath := mcpListCachePath(t, stateDir, currentClaudeLaunchContext(cwd).cacheKey())
+	event := &Event{Provider: ProviderClaudeCode, Session: SessionInfo{CWD: cwd}}
+
+	old := now.Add(-13 * 24 * time.Hour).Unix()
+	writeMCPListCache(cachePath, mcpListCache{
+		CheckedAt:   old,
+		SnapshotAt:  old,
+		Entries:     []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}},
+		HasSnapshot: true,
+	})
+	entries, complete := r.effectiveMCPInventory(event)
+	if complete || len(entries) != 2 {
+		t.Fatalf("stale inventory = %+v complete=%v, want config plus cached plugin as partial", entries, complete)
+	}
+	_, _ = r.effectiveMCPInventory(event)
+	if starts != 1 {
+		t.Fatalf("stale snapshot started %d refreshes, want 1", starts)
+	}
+
+	expired := now.Add(-mcpListCacheRetention - time.Hour).Unix()
+	writeMCPListCache(cachePath, mcpListCache{
+		CheckedAt:   now.Unix(),
+		SnapshotAt:  expired,
+		Entries:     []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}},
+		HasSnapshot: true,
+	})
+	entries, complete = r.effectiveMCPInventory(event)
+	if complete || len(entries) != 1 || entries[0].Name != "configured" {
+		t.Fatalf("expired snapshot served: %+v complete=%v", entries, complete)
+	}
+}
+
+func TestMCPListCacheView(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	entries := []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}}
+	at := func(age time.Duration) int64 { return now.Add(-age).Unix() }
+	for _, tc := range []struct {
+		name       string
+		cached     mcpListCache
+		served     bool
+		complete   bool
+		refreshDue bool
+	}{
+		{name: "missing", refreshDue: true},
+		{name: "fresh", cached: mcpListCache{CheckedAt: at(time.Minute), SnapshotAt: at(time.Minute), Entries: entries, HasSnapshot: true}, served: true, complete: true},
+		{name: "stale", cached: mcpListCache{CheckedAt: at(time.Hour), SnapshotAt: at(time.Hour), Entries: entries, HasSnapshot: true}, served: true, refreshDue: true},
+		{name: "recent failed attempt keeps stale snapshot", cached: mcpListCache{CheckedAt: at(time.Minute), SnapshotAt: at(time.Hour), Entries: entries, HasSnapshot: true}, served: true},
+		{name: "recent failed attempt without snapshot", cached: mcpListCache{CheckedAt: at(time.Minute)}},
+		{name: "expired", cached: mcpListCache{CheckedAt: at(time.Minute), SnapshotAt: at(mcpListCacheRetention + time.Hour), Entries: entries, HasSnapshot: true}},
+		{name: "legacy snapshot uses checked_at", cached: mcpListCache{CheckedAt: at(time.Minute), Entries: entries, HasSnapshot: true}, served: true, complete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := viewMCPListCache(tc.cached, now)
+			if (len(view.Entries) > 0) != tc.served || view.Complete != tc.complete || view.RefreshDue != tc.refreshDue {
+				t.Fatalf("view = %+v, want served=%v complete=%v refreshDue=%v", view, tc.served, tc.complete, tc.refreshDue)
+			}
+		})
 	}
 }
 
@@ -183,10 +229,10 @@ func TestMCPInventoryPreservesClaudeConfigAfterProbeFailure(t *testing.T) {
 	fake := installFakeClaude(t, "")
 	writeConfig(t, fake.exitFile, "1")
 	r := mcpTestRunner(t)
-	entries, complete := r.effectiveMCPInventory(t.Context(), &Event{
+	entries, complete := r.effectiveMCPInventory(&Event{
 		Provider: ProviderClaudeCode,
 		Session:  SessionInfo{CWD: cwd},
-	}, true)
+	})
 	if complete || len(entries) != 1 || entries[0].Name != "configured" {
 		t.Fatalf("Claude failed-probe inventory = %+v complete=%v", entries, complete)
 	}
@@ -202,65 +248,86 @@ url = "https://configured.example.com/mcp"
 	launch := parseCodexLaunchArgs([]string{"codex"}, cwd)
 	r := mcpTestRunner(t)
 	r.codexLaunchContext = &launch
-	entries, complete := r.effectiveMCPInventory(t.Context(), &Event{
+	entries, complete := r.effectiveMCPInventory(&Event{
 		Provider: ProviderCodex,
 		Session:  SessionInfo{CWD: cwd},
-	}, true)
+	})
 	if complete || len(entries) != 1 || entries[0].Name != "configured" {
 		t.Fatalf("Codex failed-probe inventory = %+v complete=%v", entries, complete)
 	}
 }
 
-func TestMCPInventoryDiscoveryStopsWhenCanceled(t *testing.T) {
+func TestMCPListRefreshExitsWhenAnotherWorkerHoldsLock(t *testing.T) {
 	r := quietRunner(WithDedupDir(t.TempDir()))
-	dir := r.mcpListCacheDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	path := filepath.Join(r.mcpListCacheDir(), "busy.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "canceled.json")
 	release, locked, err := tryMCPListLock(path + ".lock")
 	if err != nil || !locked {
 		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
 	}
 	defer release()
 
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
 	start := time.Now()
-	entries, complete := r.cachedMCPListEntries(ctx, "canceled", func(context.Context) ([]mcpConfigEntry, bool) {
-		t.Fatal("canceled waiter must not probe while another process holds the lock")
+	r.refreshMCPList(t.Context(), "busy", func(context.Context) ([]mcpConfigEntry, bool) {
+		t.Fatal("worker must not probe while another worker holds the lock")
 		return nil, false
 	})
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("canceled discovery took %v", elapsed)
-	}
-	if len(entries) != 0 || complete {
-		t.Fatalf("canceled discovery = %+v complete=%v", entries, complete)
+		t.Fatalf("worker waited %v for the lock", elapsed)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("canceled discovery wrote a cache snapshot: %v", err)
+		t.Fatalf("worker wrote a cache snapshot without the lock: %v", err)
 	}
 }
 
-func TestMCPInventoryDiscoveryTimeoutUsesPolicyFallback(t *testing.T) {
+func TestMCPListRefreshRecordsFailedAttempt(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	r := quietRunner(WithDedupDir(t.TempDir()))
+	r.now = func() time.Time { return now }
+	path := filepath.Join(r.mcpListCacheDir(), "failing.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := now.Add(-time.Hour).Unix()
+	writeMCPListCache(path, mcpListCache{
+		CheckedAt:   stale,
+		SnapshotAt:  stale,
+		Entries:     []mcpConfigEntry{{Name: "kept", URL: "https://kept.example.com/mcp"}},
+		HasSnapshot: true,
+	})
+	probes := 0
+	failing := func(context.Context) ([]mcpConfigEntry, bool) {
+		probes++
+		return nil, false
+	}
+	r.refreshMCPList(t.Context(), "failing", failing)
+	view := viewMCPListCache(readMCPListCache(path), now)
+	if len(view.Entries) != 1 || view.Complete || view.RefreshDue {
+		t.Fatalf("after failed probe view = %+v, want stale snapshot, partial, backing off", view)
+	}
+	r.refreshMCPList(t.Context(), "failing", failing)
+	if probes != 1 {
+		t.Fatalf("failed probe retried inside the backoff window: %d probes", probes)
+	}
+}
+
+func TestMCPGateDoesNotHitTimeoutPolicyDuringProbe(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
 	stateDir := t.TempDir()
 	r := quietRunner(
 		WithDedupDir(stateDir),
-		WithPolicy(Policy{Fail: FailClosed, Timeout: 50 * time.Millisecond}),
+		WithPolicy(Policy{Fail: FailClosed, Timeout: 200 * time.Millisecond}),
 	)
 	r.OnMCPInventory(func(context.Context, *MCPInventoryEvent) error { return nil })
 	r.OnToolPre(func(context.Context, *ToolPreEvent) (ToolPreDecision, error) {
 		return Allow(), nil
 	})
 
-	launch := currentClaudeLaunchContext(cwd)
-	dir := filepath.Join(stateDir, "agenthooks-mcplist")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	release, locked, err := tryMCPListLock(filepath.Join(dir, launch.cacheKey()+".json.lock"))
+	cachePath := mcpListCachePath(t, stateDir, currentClaudeLaunchContext(cwd).cacheKey())
+	release, locked, err := tryMCPListLock(cachePath + ".lock")
 	if err != nil || !locked {
 		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
 	}
@@ -270,13 +337,9 @@ func TestMCPInventoryDiscoveryTimeoutUsesPolicyFallback(t *testing.T) {
 		`{"session_id":"session-timeout","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__remote__call","tool_input":{}}`,
 		cwd,
 	))
-	start := time.Now()
 	out, _ := runWith(t, r, claudeArgs(), payload)
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("timed-out discovery took %v", elapsed)
-	}
-	if !strings.Contains(out, `"permissionDecision":"deny"`) {
-		t.Fatalf("timeout must use fail-closed fallback: %q", out)
+	if !strings.Contains(out, `"permissionDecision":"allow"`) {
+		t.Fatalf("an in-flight probe must not push the gate into its timeout fallback: %q", out)
 	}
 }
 

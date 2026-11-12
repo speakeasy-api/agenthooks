@@ -1,7 +1,6 @@
 package agenthooks
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -48,14 +47,10 @@ type mcpConfigEntry struct {
 // detection itself: <server>_<tool> names carry no reserved marker, so only
 // a config match can tell an MCP call apart from a native tool (quirk #28).
 func (r *Runner) resolveMCP(typed any) {
-	r.resolveMCPWithOpenCodeInventory(context.Background(), typed, nil)
+	r.resolveMCPWithOpenCodeInventory(typed, nil)
 }
 
-func (r *Runner) resolveMCPContext(ctx context.Context, typed any) {
-	r.resolveMCPWithOpenCodeInventory(ctx, typed, nil)
-}
-
-func (r *Runner) resolveMCPWithOpenCodeInventory(ctx context.Context, typed any, inventory *[]mcpConfigEntry) {
+func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConfigEntry) {
 	if r.mcpResolveOff {
 		return
 	}
@@ -79,10 +74,10 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(ctx context.Context, typed any,
 		r.resolveCopilotMCP(tc, loadMCPConfigEntries(ProviderCopilotCLI, base.Session.CWD))
 		return
 	}
-	r.resolveMCPProvider(ctx, typed)
+	r.resolveMCPProvider(typed)
 }
 
-func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
+func (r *Runner) resolveMCPProvider(typed any) {
 	if r.mcpResolveOff {
 		return
 	}
@@ -107,14 +102,14 @@ func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
 	)
 	switch base.Provider {
 	case ProviderClaudeCode:
-		matched, server, tool = r.resolveClaudeMCP(ctx, base, tc)
+		matched, server, tool = r.resolveClaudeMCP(base, tc)
 	case ProviderKimi:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp__<server>__<tool> with the configured name verbatim — hyphens
 		// survive unsanitized (verified against kimi-code 0.22.2).
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", verbatimMCPName)
 	case ProviderCodex:
-		matched, server, tool = r.resolveCodexMCP(ctx, base, tc)
+		matched, server, tool = r.resolveCodexMCP(base, tc)
 	case ProviderGemini:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp_<server>_<tool> with a single-underscore separator: the split
@@ -156,14 +151,16 @@ func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
 	}
 }
 
-func (r *Runner) resolveCodexMCP(ctx context.Context, base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
+func (r *Runner) resolveCodexMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
 	launch, recovered := r.currentCodexLaunchContext(base.Session.CWD)
 	if recovered && launch.Unreplayable {
 		return nil, "", ""
 	}
+	// The cached launch inventory answers at any age; only a fresh one is
+	// authoritative about a server it does not list.
 	if recovered && !r.mcpListOff {
-		entries, authoritative := r.codexMCPListEntries(ctx, launch)
-		if matched, server, tool := matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName); matched != nil || authoritative {
+		list := r.codexMCPList(launch)
+		if matched, server, tool := matchSanitizedPrefix(list.Entries, tc.Name, "mcp__", "__", codexSanitizeMCPName); matched != nil || list.Complete {
 			return matched, server, tool
 		}
 	}
@@ -176,7 +173,7 @@ func (r *Runner) resolveCodexMCP(ctx context.Context, base *Event, tc *ToolCall)
 	return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName)
 }
 
-func (r *Runner) resolveClaudeMCP(parent context.Context, base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
+func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
 	launch := currentClaudeLaunchContext(base.Session.CWD)
 	if launch.SafeMode {
 		return nil, "", ""
@@ -192,13 +189,13 @@ func (r *Runner) resolveClaudeMCP(parent context.Context, base *Event, tc *ToolC
 		if r.mcpListOff || len(launch.PluginDirs) == 0 {
 			return nil, "", ""
 		}
-		entries, _ := r.claudeMCPListSnapshot(parent, launch)
-		entries = launch.barePluginEntries(entries)
+		entries := launch.barePluginEntries(r.claudeMCPList(launch, base.Session.CWD).Entries)
 		return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 	}
 
 	// Settings and launch-only plugins can remove or shadow ordinary config,
-	// so their reconstructed CLI inventory is authoritative. An explicit
+	// so their reconstructed CLI inventory is authoritative once fresh. Until
+	// then the cached snapshot leads and config files fill in. An explicit
 	// --mcp-config was already checked above because `mcp list` cannot accept
 	// that variadic top-level flag.
 	if len(launch.ReplayArgs) > 0 {
@@ -206,7 +203,11 @@ func (r *Runner) resolveClaudeMCP(parent context.Context, base *Event, tc *ToolC
 			entries := loadMCPConfigEntries(ProviderClaudeCode, base.Session.CWD)
 			return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 		}
-		entries, _ := r.claudeMCPListSnapshot(parent, launch)
+		list := r.claudeMCPList(launch, base.Session.CWD)
+		if matched, server, tool := matchSanitizedPrefix(list.Entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName); matched != nil || list.Complete {
+			return matched, server, tool
+		}
+		entries := loadMCPConfigEntries(ProviderClaudeCode, base.Session.CWD)
 		return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 	}
 
@@ -217,7 +218,7 @@ func (r *Runner) resolveClaudeMCP(parent context.Context, base *Event, tc *ToolC
 	if r.mcpListOff {
 		return nil, "", ""
 	}
-	entries, _ := r.claudeMCPListSnapshot(parent, launch)
+	entries := r.claudeMCPList(launch, base.Session.CWD).Entries
 	return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 }
 
@@ -840,7 +841,7 @@ func decodeCodexMCPList(data []byte) ([]mcpConfigEntry, bool) {
 // last ": " separates name from target.
 func parseClaudeMCPList(out string) []mcpConfigEntry {
 	var entries []mcpConfigEntry
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

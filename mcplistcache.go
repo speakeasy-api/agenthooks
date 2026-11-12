@@ -101,7 +101,7 @@ func (r *Runner) claudeMCPWarmContext(cwd string) (claudeLaunchContext, bool) {
 		return claudeLaunchContext{}, false
 	}
 	launch := currentClaudeLaunchContext(cwd)
-	if launch.SafeMode || launch.StrictMCP || (launch.Bare && len(launch.PluginDirs) == 0) {
+	if launch.SafeMode || launch.StrictMCP || launch.Cowork || (launch.Bare && len(launch.PluginDirs) == 0) {
 		return claudeLaunchContext{}, false
 	}
 	return launch, true
@@ -128,7 +128,14 @@ func (r *Runner) warmClaudeMCP(cwd string) {
 
 // claudeMCPList serves the cached `claude mcp list` snapshot for launch and
 // starts a background refresh when it is due. It never runs the probe.
+//
+// Cowork sessions never probe: the list there is always empty (see
+// claudeLaunchContext.Cowork), and serving it would read as a complete,
+// empty inventory.
 func (r *Runner) claudeMCPList(launch claudeLaunchContext, cwd string) mcpListView {
+	if launch.Cowork {
+		return mcpListView{}
+	}
 	var start func()
 	if r.mcpWarmStart != nil {
 		start = func() { r.mcpWarmStart(cwd) }

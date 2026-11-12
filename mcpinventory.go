@@ -135,8 +135,16 @@ func (r *Runner) effectiveMCPInventory(base *Event) ([]mcpConfigEntry, bool) {
 	}
 }
 
+// effectiveClaudeMCPInventory never reports a Cowork inventory as complete:
+// Cowork connectors come from the claude.ai account, which no local source
+// lists.
 func (r *Runner) effectiveClaudeMCPInventory(cwd string) ([]mcpConfigEntry, bool) {
 	launch := currentClaudeLaunchContext(cwd)
+	entries, complete := r.claudeMCPInventory(launch, cwd)
+	return entries, complete && !launch.Cowork
+}
+
+func (r *Runner) claudeMCPInventory(launch claudeLaunchContext, cwd string) ([]mcpConfigEntry, bool) {
 	if launch.SafeMode {
 		return nil, true
 	}

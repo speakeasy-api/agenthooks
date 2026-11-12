@@ -194,6 +194,72 @@ func TestMCPInventoryServesStaleSnapshotAsPartial(t *testing.T) {
 	}
 }
 
+// Cowork connectors come from the claude.ai account, not the VM, so `claude
+// mcp list` there always prints no servers. It must never become a complete,
+// empty inventory.
+func TestMCPInventoryCoworkIsNeverComplete(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		entrypoint string
+		opts       []Option
+		complete   bool
+		probes     int
+	}{
+		{name: "cowork", entrypoint: claudeCoworkEntrypoint, probes: 0},
+		{name: "cowork without CLI fallback", entrypoint: claudeCoworkEntrypoint, opts: []Option{WithoutMCPListFallback()}, probes: 0},
+		{name: "cli", entrypoint: "cli", complete: true, probes: 1},
+		{name: "cli without CLI fallback", entrypoint: "cli", opts: []Option{WithoutMCPListFallback()}, complete: true, probes: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHome(t)
+			t.Setenv("CLAUDE_CODE_ENTRYPOINT", tc.entrypoint)
+			cwd := t.TempDir()
+			writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+			fake := installFakeClaude(t, "No MCP servers configured. Use `claude mcp add` to add a server.\n")
+			r := mcpTestRunner(t, tc.opts...)
+			entries, complete := r.effectiveMCPInventory(&Event{
+				Provider: ProviderClaudeCode,
+				Session:  SessionInfo{CWD: cwd},
+			})
+			if complete != tc.complete || len(entries) != 1 || entries[0].Name != "configured" {
+				t.Fatalf("inventory = %+v complete=%v, want configured only, complete=%v", entries, complete, tc.complete)
+			}
+			if got := cliRuns(t, fake.countFile); got != tc.probes {
+				t.Fatalf("claude mcp list ran %d times, want %d", got, tc.probes)
+			}
+		})
+	}
+}
+
+func TestClaudeCoworkSkipsProbeButResolvesConfig(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", claudeCoworkEntrypoint)
+	project := t.TempDir()
+	writeConfig(t, filepath.Join(project, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "connector: https://wrong.example.com/mcp - connected\n")
+	startClaudeLaunch(t, project, "-p", "prompt", "--settings", "extra.json")
+	r := mcpTestRunner(t)
+	r.mcpWarmStart = func(string) { t.Fatal("Cowork session scheduled an MCP list refresh") }
+
+	configured := mcpToolPre(ProviderClaudeCode, project, "mcp__configured__run")
+	r.resolveMCP(configured)
+	connector := mcpToolPre(ProviderClaudeCode, project, "mcp__connector__run")
+	r.resolveMCP(connector)
+	if configured.Tool.MCP.URL != "https://configured.example.com/mcp" || connector.Tool.MCP.URL != "" {
+		t.Fatalf("Cowork resolution: configured=%+v connector=%+v", configured.Tool.MCP, connector.Tool.MCP)
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"hook_event_name":"SessionStart","session_id":"s-cowork","cwd":%q,"source":"startup"}`,
+		project,
+	))
+	if _, code := runWith(t, r, claudeArgs(), payload); code != 0 {
+		t.Fatalf("Cowork SessionStart exit = %d", code)
+	}
+	if got := cliRuns(t, fake.countFile); got != 0 {
+		t.Fatalf("Cowork session ran claude mcp list %d times", got)
+	}
+}
+
 func TestMCPListCacheView(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	entries := []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}}

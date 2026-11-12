@@ -152,6 +152,8 @@ func isolateHome(t *testing.T) string {
 	// pid and probe the developer's real CLI instead of the fake. Tests that
 	// want a launch context call startClaudeLaunch, which sets its own.
 	t.Setenv("CLAUDE_PID", "")
+	// Likewise a Cowork entrypoint would turn off every Claude CLI probe.
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "")
 	return home
 }
 

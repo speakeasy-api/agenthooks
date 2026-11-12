@@ -9,17 +9,91 @@ import (
 	"time"
 )
 
+// The provider CLI inventory (`claude mcp list`, `codex mcp list --json`) is
+// expensive: Claude health-checks every server and can take well over 15
+// seconds. Hooks therefore never run it. They serve the on-device snapshot
+// as it is and, when it is due, start one detached refresh worker that
+// replaces the snapshot for the next hook.
+//
+// Main starts the worker with startDetachedSelf and releases it without
+// waiting, so it can outlive the hook and the agent:
+//   - macOS and Linux: the worker runs in its own session (setsid), so a
+//     terminal hangup or the agent's exit does not signal it. Once the hook
+//     that spawned it exits it is reparented to launchd/init (or the nearest
+//     subreaper), which reaps it. The probe runs in its own process group
+//     and is killed as a group on timeout (mcpprobe_unix.go).
+//   - Windows: the worker is a DETACHED_PROCESS in a new process group, so
+//     console close and Ctrl events do not reach it. An agent that runs hooks
+//     in a kill-on-close job without breakaway ends it with the agent; the
+//     lock dies with it and the next hook starts a new refresh. The probe
+//     runs without a window and taskkill /T ends its tree on timeout
+//     (mcpprobe_windows.go).
+//
+// Either way a worker lives at most mcpListProbeTimeout plus
+// mcpListProbeWaitDelay, holds only the per-context lock (released by the OS
+// if the worker dies), and writes its snapshot even after the agent exits,
+// which serves the next session with the same launch context.
 const (
-	mcpListProbeTimeout    = 15 * time.Second
-	mcpListWaitTimeout     = mcpListProbeTimeout + time.Second
+	// mcpListRefreshInterval is the fresh window. A snapshot from a probe
+	// that finished inside it is reported as complete; an older one is still
+	// served, as a partial inventory. It is also the retry backoff after a
+	// failed or timed-out probe.
 	mcpListRefreshInterval = 5 * time.Minute
-	mcpListCacheRetention  = 24 * time.Hour
+	// mcpListCacheRetention bounds how old a snapshot may be and still be
+	// served. Files untouched for longer are deleted.
+	mcpListCacheRetention = 14 * 24 * time.Hour
+	// mcpListProbeTimeout bounds a background probe. Only the detached
+	// refresh worker runs probes, so this never delays an agent.
+	mcpListProbeTimeout = 2 * time.Minute
+	// mcpListProbeWaitDelay bounds how long a finished or killed probe may
+	// hold its output pipes open through descendants that inherited them.
+	mcpListProbeWaitDelay = 5 * time.Second
 )
 
 type mcpListCache struct {
-	CheckedAt   int64            `json:"checked_at"`
+	// CheckedAt is when the last probe attempt ended, successful or not.
+	CheckedAt int64 `json:"checked_at"`
+	// SnapshotAt is when the probe that produced Entries finished. Caches
+	// written before this field existed fall back to CheckedAt.
+	SnapshotAt  int64            `json:"snapshot_at,omitempty"`
 	Entries     []mcpConfigEntry `json:"entries"`
 	HasSnapshot bool             `json:"has_snapshot,omitempty"`
+}
+
+func (c mcpListCache) snapshotTime() time.Time {
+	if !c.HasSnapshot {
+		return time.Time{}
+	}
+	if c.SnapshotAt != 0 {
+		return time.Unix(c.SnapshotAt, 0)
+	}
+	return time.Unix(c.CheckedAt, 0)
+}
+
+// mcpListView is what a hook may use from a cached snapshot. Entries is the
+// last successful inventory if it is within retention. Complete reports that
+// the inventory came from a probe that finished inside the fresh window.
+// RefreshDue reports that no probe attempt ended inside the fresh window.
+type mcpListView struct {
+	Entries    []mcpConfigEntry
+	Complete   bool
+	RefreshDue bool
+}
+
+func viewMCPListCache(cached mcpListCache, now time.Time) mcpListView {
+	view := mcpListView{
+		RefreshDue: cached.CheckedAt == 0 || now.Sub(time.Unix(cached.CheckedAt, 0)) >= mcpListRefreshInterval,
+	}
+	if !cached.HasSnapshot {
+		return view
+	}
+	age := now.Sub(cached.snapshotTime())
+	if age > mcpListCacheRetention {
+		return view
+	}
+	view.Entries = cached.Entries
+	view.Complete = age < mcpListRefreshInterval
+	return view
 }
 
 func (r *Runner) claudeMCPWarmContext(cwd string) (claudeLaunchContext, bool) {
@@ -27,124 +101,46 @@ func (r *Runner) claudeMCPWarmContext(cwd string) (claudeLaunchContext, bool) {
 		return claudeLaunchContext{}, false
 	}
 	launch := currentClaudeLaunchContext(cwd)
-	if launch.SafeMode || launch.StrictMCP || (launch.Bare && len(launch.PluginDirs) == 0) {
+	if launch.SafeMode || launch.StrictMCP || launch.Cowork || (launch.Bare && len(launch.PluginDirs) == 0) {
 		return claudeLaunchContext{}, false
 	}
 	return launch, true
 }
 
-func (r *Runner) shouldWarmClaudeMCP(cwd string) bool {
-	_, ok := r.claudeMCPWarmContext(cwd)
-	return ok
-}
-
-func (r *Runner) warmClaudeMCP(cwd string) {
+// refreshClaudeMCPListIfDue starts a background `claude mcp list` for the
+// session's launch context when its snapshot is due. It never waits.
+func (r *Runner) refreshClaudeMCPListIfDue(cwd string) {
 	if launch, ok := r.claudeMCPWarmContext(cwd); ok {
-		_ = r.claudeMCPListEntries(launch)
+		_ = r.claudeMCPList(launch, cwd)
 	}
 }
 
-func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
-	entries, _ := r.claudeMCPListSnapshot(context.Background(), launch)
-	return entries
-}
-
-func (r *Runner) claudeMCPListSnapshot(ctx context.Context, launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
-	return r.cachedMCPListEntries(ctx, launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+// warmClaudeMCP is the detached refresh worker's entry point.
+func (r *Runner) warmClaudeMCP(cwd string) {
+	launch, ok := r.claudeMCPWarmContext(cwd)
+	if !ok {
+		return
+	}
+	r.refreshMCPList(context.Background(), launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
 		return runClaudeMCPList(ctx, launch)
 	})
 }
 
-func (r *Runner) cachedMCPListEntries(parent context.Context, key string, probe func(context.Context) ([]mcpConfigEntry, bool)) ([]mcpConfigEntry, bool) {
-	ctx, cancel := context.WithTimeout(parent, mcpListWaitTimeout)
-	defer cancel()
-	dir := r.mcpListCacheDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, false
+// claudeMCPList serves the cached `claude mcp list` snapshot for launch and
+// starts a background refresh when it is due. It never runs the probe.
+//
+// Cowork sessions never probe: the list there is always empty (see
+// claudeLaunchContext.Cowork), and serving it would read as a complete,
+// empty inventory.
+func (r *Runner) claudeMCPList(launch claudeLaunchContext, cwd string) mcpListView {
+	if launch.Cowork {
+		return mcpListView{}
 	}
-	path := filepath.Join(dir, key+".json")
-	now := r.mcpListNow()
-	cached := readMCPListCache(path)
-	if mcpListCacheFresh(cached, now) {
-		return cached.Entries, cached.HasSnapshot
+	var start func()
+	if r.mcpWarmStart != nil {
+		start = func() { r.mcpWarmStart(cwd) }
 	}
-	if ctx.Err() != nil {
-		return cached.Entries, cached.HasSnapshot
-	}
-	cleanupMCPListCache(dir, time.Now())
-
-	// Only one process runs the expensive health check for a context. Waiters
-	// consume its replacement snapshot instead of starting a probe stampede.
-	var unlock func()
-	backoff := 25 * time.Millisecond
-	for {
-		release, ok, lockErr := tryMCPListLock(path + ".lock")
-		if lockErr != nil {
-			if cached.CheckedAt != 0 {
-				return cached.Entries, cached.HasSnapshot
-			}
-			if entries, success := probe(ctx); success {
-				return entries, true
-			}
-			return nil, false
-		}
-		if ok {
-			unlock = release
-			break
-		}
-		if latest := readMCPListCache(path); mcpListCacheFresh(latest, r.mcpListNow()) {
-			return latest.Entries, latest.HasSnapshot
-		}
-		select {
-		case <-ctx.Done():
-			if latest := readMCPListCache(path); latest.CheckedAt > cached.CheckedAt {
-				return latest.Entries, latest.HasSnapshot
-			}
-			return cached.Entries, cached.HasSnapshot
-		case <-time.After(backoff):
-		}
-		backoff = min(2*backoff, 250*time.Millisecond)
-	}
-	defer unlock()
-
-	// The waiter may have observed staleness immediately before another
-	// process refreshed and released the lock.
-	cached = readMCPListCache(path)
-	now = r.mcpListNow()
-	if mcpListCacheFresh(cached, now) {
-		return cached.Entries, cached.HasSnapshot
-	}
-	if ctx.Err() != nil {
-		return cached.Entries, cached.HasSnapshot
-	}
-	if entries, success := probe(ctx); success {
-		cached.Entries = entries // successful probes replace, so removals stick
-		cached.HasSnapshot = true
-	}
-	if ctx.Err() != nil {
-		return cached.Entries, cached.HasSnapshot
-	}
-	cached.CheckedAt = now.Unix()
-	writeMCPListCache(path, cached)
-	return cached.Entries, cached.HasSnapshot
-}
-
-func (r *Runner) cachedMCPListSnapshot(key string) ([]mcpConfigEntry, bool) {
-	cached := readMCPListCache(filepath.Join(r.mcpListCacheDir(), key+".json"))
-	if !mcpListCacheFresh(cached, r.mcpListNow()) {
-		return nil, false
-	}
-	return cached.Entries, cached.HasSnapshot
-}
-
-func (r *Runner) mcpListCacheDir() string {
-	if r.dedupDir != "" {
-		return filepath.Join(r.dedupDir, "agenthooks-mcplist")
-	}
-	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "agenthooks", "mcp-list")
-	}
-	return filepath.Join(os.TempDir(), "agenthooks-mcplist")
+	return r.cachedMCPList(launch.cacheKey(), start)
 }
 
 func (r *Runner) currentCodexLaunchContext(cwd string) (codexLaunchContext, bool) {
@@ -169,19 +165,118 @@ func (r *Runner) codexMCPWarmContext(cwd string) (codexLaunchContext, bool) {
 	return launch, true
 }
 
+// warmCodexMCP is the detached refresh worker's entry point.
 func (r *Runner) warmCodexMCP(launch codexLaunchContext) {
-	if !r.mcpResolveOff && !r.mcpListOff && !launch.Unreplayable {
-		_, _ = r.codexMCPListEntries(context.Background(), launch)
+	if r.mcpResolveOff || r.mcpListOff || launch.Unreplayable {
+		return
 	}
-}
-
-func (r *Runner) codexMCPListEntries(ctx context.Context, launch codexLaunchContext) ([]mcpConfigEntry, bool) {
-	return r.cachedMCPListEntries(ctx, launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+	r.refreshMCPList(context.Background(), launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
 		return runCodexMCPList(ctx, launch)
 	})
 }
 
-func cleanupMCPListCache(dir string, now time.Time) {
+// codexMCPList serves the cached `codex mcp list --json` snapshot for launch
+// and starts a background refresh when it is due. It never runs the probe.
+func (r *Runner) codexMCPList(launch codexLaunchContext) mcpListView {
+	var start func()
+	if r.codexMCPWarmStart != nil {
+		start = func() { r.codexMCPWarmStart(launch) }
+	}
+	return r.cachedMCPList(launch.cacheKey(), start)
+}
+
+// cachedMCPList reads the snapshot for key and, when a refresh is due and no
+// worker holds the context's lock, calls start once. start comes from
+// Runner.mcpWarmStart or codexMCPWarmStart, which Main sets to spawn a
+// detached worker and return at once; without Main they are nil and hooks
+// serve the cache without refreshing it. The snapshot is read again after
+// start so a synchronous start is visible to the caller.
+func (r *Runner) cachedMCPList(key string, start func()) mcpListView {
+	path := filepath.Join(r.mcpListCacheDir(), key+".json")
+	view := viewMCPListCache(readMCPListCache(path), r.mcpListNow())
+	if !view.RefreshDue || start == nil || !r.claimMCPListRefresh(key, path) {
+		return view
+	}
+	start()
+	return viewMCPListCache(readMCPListCache(path), r.mcpListNow())
+}
+
+// claimMCPListRefresh reports whether this process should start a refresh
+// worker for key: not already started by this process inside the fresh
+// window, and no worker currently holding the context's lock. The lock is
+// only probed here; the worker takes it for itself.
+func (r *Runner) claimMCPListRefresh(key, path string) bool {
+	now := r.mcpListNow()
+	r.mcpRefreshMu.Lock()
+	defer r.mcpRefreshMu.Unlock()
+	if started, ok := r.mcpRefreshStarted[key]; ok && now.Sub(started) < mcpListRefreshInterval {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false
+	}
+	release, ok, err := tryMCPListLock(path + ".lock")
+	if err != nil || !ok {
+		return false
+	}
+	release()
+	if r.mcpRefreshStarted == nil {
+		r.mcpRefreshStarted = map[string]time.Time{}
+	}
+	r.mcpRefreshStarted[key] = now
+	return true
+}
+
+// refreshMCPList runs one probe for key under the context's lock and replaces
+// the snapshot. A worker that finds the lock held exits at once: another
+// worker already owns the refresh. A failed or timed-out probe records the
+// attempt, which keeps the last snapshot and backs off for the fresh window.
+func (r *Runner) refreshMCPList(parent context.Context, key string, probe func(context.Context) ([]mcpConfigEntry, bool)) {
+	dir := r.mcpListCacheDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	cleanupMCPListCache(dir, time.Now(), mcpListCacheRetention)
+	path := filepath.Join(dir, key+".json")
+	unlock, ok, err := tryMCPListLock(path + ".lock")
+	if err != nil || !ok {
+		return
+	}
+	defer unlock()
+
+	// Another worker may have refreshed between the caller's read and this
+	// lock.
+	cached := readMCPListCache(path)
+	if !viewMCPListCache(cached, r.mcpListNow()).RefreshDue {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, mcpListProbeTimeout)
+	defer cancel()
+	entries, success := probe(ctx)
+	if parent.Err() != nil {
+		return
+	}
+	finished := r.mcpListNow().Unix()
+	cached.CheckedAt = finished
+	if success {
+		cached.Entries = entries // successful probes replace, so removals stick
+		cached.HasSnapshot = true
+		cached.SnapshotAt = finished
+	}
+	writeMCPListCache(path, cached)
+}
+
+func (r *Runner) mcpListCacheDir() string {
+	if r.dedupDir != "" {
+		return filepath.Join(r.dedupDir, "agenthooks-mcplist")
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "agenthooks", "mcp-list")
+	}
+	return filepath.Join(os.TempDir(), "agenthooks-mcplist")
+}
+
+func cleanupMCPListCache(dir string, now time.Time, retention time.Duration) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -190,7 +285,7 @@ func cleanupMCPListCache(dir string, now time.Time) {
 		if entry.IsDir() {
 			continue
 		}
-		if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > mcpListCacheRetention {
+		if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) > retention {
 			_ = os.Remove(filepath.Join(dir, entry.Name()))
 		}
 	}
@@ -208,10 +303,6 @@ func readMCPListCache(path string) mcpListCache {
 		return mcpListCache{}
 	}
 	return cached
-}
-
-func mcpListCacheFresh(cached mcpListCache, now time.Time) bool {
-	return cached.CheckedAt != 0 && now.Sub(time.Unix(cached.CheckedAt, 0)) < mcpListRefreshInterval
 }
 
 func writeMCPListCache(path string, cached mcpListCache) {
@@ -264,6 +355,7 @@ func runClaudeMCPList(parent context.Context, launch claudeLaunchContext) ([]mcp
 	if launch.ProjectDir != "" {
 		cmd.Dir = launch.ProjectDir
 	}
+	configureMCPListProbe(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, false
@@ -290,6 +382,7 @@ func runCodexMCPList(parent context.Context, launch codexLaunchContext) ([]mcpCo
 	if launch.CWD != "" {
 		cmd.Dir = launch.CWD
 	}
+	configureMCPListProbe(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, false

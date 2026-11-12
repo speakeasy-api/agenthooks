@@ -191,19 +191,21 @@ config, and an absent one already means match-all.
   `opencode.json(c)`). OpenCode's
   shim uses the running server's resolved inventory, including custom, inline,
   remote, and managed configuration. Codex replays launch `-c` overrides and
-  profiles into a detached `codex mcp list --json` warm, keyed by the recovered
-  launch context. On Claude Code, servers absent from
+  profiles into `codex mcp list --json`, keyed by the recovered launch
+  context. On Claude Code, servers absent from
   config files (plugins, claude.ai connectors) are attributed via
-  `claude mcp list`, started
-  as a detached `SessionStart` warm in the launching process's project and
-  configuration context. The first MCP hook waits for that same context's
-  in-flight snapshot only when discovery has not finished. On Claude Code
-  2.1.214+, launch-only `--mcp-config`, `--strict-mcp-config`, `--settings`,
-  `--setting-sources`, `--plugin-dir`, `--bare`, and
+  `claude mcp list` in the launching process's project and configuration
+  context. No hook waits for either CLI: hooks serve the cached snapshot and,
+  when it is older than 5 minutes or missing, start one detached refresh
+  worker (probe timeout 2 minutes) whose result the next hook uses. On Claude
+  Code 2.1.214+, launch-only `--mcp-config`, `--strict-mcp-config`,
+  `--settings`, `--setting-sources`, `--plugin-dir`, `--bare`, and
   `--safe-mode` semantics are recovered through `CLAUDE_PID`; older versions
-  fall back to the ordinary on-disk context. Inventories are cached briefly by
-  a secret-safe context digest under the user cache directory and replaced on
-  refresh so removals propagate.
+  fall back to the ordinary on-disk context. Snapshots are cached by a
+  secret-safe context digest under the user cache directory, served for up to
+  14 days, and replaced on refresh so removals propagate. `MCPInventoryEvent`
+  is `Complete` only when its CLI snapshot is under 5 minutes old; an older
+  one is merged with config files and reported as partial.
   Remote `--plugin-url` servers stay unattributed rather than being refetched
   with potentially different code during hook dispatch.
   Config-resolved transport is flagged `FromConfig` and is best-effort —

@@ -30,6 +30,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -52,6 +53,8 @@ type Runner struct {
 	mcpWarmStart       func(string)
 	codexLaunchContext *codexLaunchContext
 	codexMCPWarmStart  func(codexLaunchContext)
+	mcpRefreshMu       sync.Mutex
+	mcpRefreshStarted  map[string]time.Time
 	anyHandlers        []func(context.Context, *Event) error
 	otherByName        map[string][]func(context.Context, *Event) error
 	interceptors       []Interceptor
@@ -347,15 +350,15 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		r.logger.Debug("agenthooks: event decoded", "native", base.NativeName, "kind", string(base.Kind))
 	}
 
-	// Start the launch-context inventory probe without delaying SessionStart.
-	// A first MCP event arriving before it finishes waits on the same cache
-	// lock and consumes the worker's snapshot.
-	if provider == ProviderClaudeCode && base.Kind == KindSessionStart && r.mcpWarmStart != nil && r.shouldWarmClaudeMCP(base.Session.CWD) {
-		r.mcpWarmStart(base.Session.CWD)
+	// Refresh a stale launch-context inventory in a detached worker so it is
+	// ready for the session's MCP hooks. No hook waits for it: MCP hooks
+	// below serve the cached snapshot and start the same refresh if needed.
+	if provider == ProviderClaudeCode && base.Kind == KindSessionStart {
+		r.refreshClaudeMCPListIfDue(base.Session.CWD)
 	}
-	if provider == ProviderCodex && base.Kind == KindSessionStart && r.codexMCPWarmStart != nil {
+	if provider == ProviderCodex && base.Kind == KindSessionStart {
 		if launch, ok := r.codexMCPWarmContext(base.Session.CWD); ok {
-			r.codexMCPWarmStart(launch)
+			_ = r.codexMCPList(launch)
 		}
 	}
 	deadline := pol.Timeout
@@ -371,7 +374,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 
 	// Attach MCP transport before the matcher filter runs: resolution can
 	// repair the Server/Tool split, which MCP globs match against.
-	r.resolveMCPContext(hctx, typed)
+	r.resolveMCP(typed)
 
 	// In-process matcher filter for providers whose config dialect can't
 	// express the manifest matcher (§7).
@@ -394,12 +397,12 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		}
 	}
 
-	// SessionStart uses only a ready cache plus cheap explicit/config reads.
-	// The first MCP gate waits for provider discovery and inventory delivery.
-	// All work shares the hook deadline so timeout policy applies before exit.
+	// Inventory uses only cheap explicit/config reads and the cached CLI
+	// snapshot, so no hook waits for provider discovery. Delivery shares the
+	// hook deadline so timeout policy applies before exit.
 	tool := toolOf(typed)
 	if hctx.Err() == nil && shouldReportMCPInventory(base, tool) {
-		err := r.reportMCPInventory(hctx, base, base.Kind != KindSessionStart)
+		err := r.reportMCPInventory(hctx, base)
 		if err != nil {
 			r.logger.Error("agenthooks: MCP inventory handler failed", "error", err)
 		}

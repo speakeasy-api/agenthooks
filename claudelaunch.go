@@ -29,9 +29,22 @@ type claudeLaunchContext struct {
 	StrictMCP  bool
 	Bare       bool
 	SafeMode   bool
+	// Cowork marks a Claude Cowork session. Its connectors come from the
+	// claude.ai account rather than the VM, so `claude mcp list` there always
+	// reports no servers and is never a complete inventory.
+	Cowork bool
 }
 
+// claudeCoworkEntrypoint is CLAUDE_CODE_ENTRYPOINT in Claude Cowork sessions.
+const claudeCoworkEntrypoint = "remote_cowork"
+
 func currentClaudeLaunchContext(cwd string) claudeLaunchContext {
+	c := launchArgsClaudeContext(cwd)
+	c.Cowork = os.Getenv("CLAUDE_CODE_ENTRYPOINT") == claudeCoworkEntrypoint
+	return c
+}
+
+func launchArgsClaudeContext(cwd string) claudeLaunchContext {
 	projectDir := os.Getenv("CLAUDE_PROJECT_DIR")
 	if projectDir == "" {
 		projectDir = cwd

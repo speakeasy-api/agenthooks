@@ -71,6 +71,10 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindStop:            caps(CapContinueAgent, CapStopAgent),
 		KindSessionStart:    caps(CapAddContext),
 	},
+	ProviderAntigravity: {
+		KindToolPre: caps(CapDeny, CapAsk, CapAllow),
+		KindStop:    caps(CapContinueAgent),
+	},
 	ProviderOpenCode: {
 		KindToolPre:         caps(CapDeny, CapUpdateInput),
 		KindPromptSubmitted: caps(CapDeny, CapAddContext),

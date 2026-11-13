@@ -66,6 +66,8 @@ func FixtureDir(p agenthooks.Provider) string {
 		return "openclaw"
 	case agenthooks.ProviderKimi:
 		return "kimi"
+	case agenthooks.ProviderAntigravity:
+		return "antigravity"
 	case agenthooks.ProviderCopilotCLI:
 		return "copilot"
 	case agenthooks.ProviderVSCodeCopilot:
@@ -105,9 +107,9 @@ func AssertNoOp(tb testing.TB, provider agenthooks.Provider, res Result) {
 	}
 	got := strings.TrimSpace(string(res.Stdout))
 	switch provider {
-	case agenthooks.ProviderCodex, agenthooks.ProviderKimi:
+	case agenthooks.ProviderCodex, agenthooks.ProviderKimi, agenthooks.ProviderAntigravity:
 		// Codex rejects unknown JSON; Kimi appends exit-0 stdout to the model
-		// context. Both need a truly empty no-op.
+		// context; Antigravity reads {} as a deny. All need a truly empty no-op.
 		if got != "" {
 			tb.Fatalf("%s no-op stdout = %q, want empty", provider, got)
 		}

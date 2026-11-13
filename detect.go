@@ -23,17 +23,21 @@ type invocation struct {
 	payload     string
 	timeout     time.Duration
 	filter      *ToolMatcher
+	// event is the native event name for dialects whose payload omits it
+	// (Antigravity, quirk #51); generated configs pass it as --event=.
+	event string
 }
 
 var validProviders = map[Provider]bool{
-	ProviderClaudeCode: true,
-	ProviderCursor:     true,
-	ProviderCodex:      true,
-	ProviderGemini:     true,
-	ProviderOpenCode:   true,
-	ProviderOpenClaw:   true,
-	ProviderKimi:       true,
-	ProviderCopilotCLI: true,
+	ProviderClaudeCode:  true,
+	ProviderCursor:      true,
+	ProviderCodex:       true,
+	ProviderGemini:      true,
+	ProviderOpenCode:    true,
+	ProviderOpenClaw:    true,
+	ProviderKimi:        true,
+	ProviderAntigravity: true,
+	ProviderCopilotCLI:  true,
 	// VS Code ships no provider env marker and no field Claude Code doesn't
 	// also send, so this one is reachable by the generated --provider flag
 	// only: neither detectFromEnv nor detectFromShape can produce it.
@@ -68,14 +72,23 @@ func parseArgs(args []string) (*invocation, error) {
 			inv.argvPayload = true
 		case strings.HasPrefix(a, "--provider="):
 			p := Provider(strings.TrimPrefix(a, "--provider="))
-			if p == "kimi" {
+			switch p {
+			case "kimi":
 				p = ProviderKimi
+			case "agy":
+				p = ProviderAntigravity
+			case "copilot":
+				// Configs generated before the Copilot split still pass the
+				// old slug; rejecting it would fail every installed hook.
+				p = ProviderCopilotCLI
 			}
 			if !validProviders[p] {
 				return nil, fmt.Errorf("agenthooks: unknown provider %q", p)
 			}
 			inv.provider = p
 			inv.confidence = DetectionConfig
+		case strings.HasPrefix(a, "--event="):
+			inv.event = strings.TrimPrefix(a, "--event=")
 		case strings.HasPrefix(a, "--variant="):
 			inv.variant = Variant(strings.TrimPrefix(a, "--variant="))
 		case strings.HasPrefix(a, "--timeout="):
@@ -181,11 +194,13 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		ToolCallID     string `json:"tool_call_id"`
 		// Raw, not string: Copilot ships an epoch-ms NUMBER here and a typed
 		// mismatch would fail the whole probe, not just this field.
-		Timestamp      json.RawMessage `json:"timestamp"`
-		SessionIDCamel string          `json:"sessionId"`
-		Seq            json.RawMessage `json:"seq"`
-		Hook           string          `json:"hook"`
-		Event          json.RawMessage `json:"event"`
+		Timestamp           json.RawMessage `json:"timestamp"`
+		SessionIDCamel      string          `json:"sessionId"`
+		ConversationIDCamel string          `json:"conversationId"`
+		WorkspacePaths      json.RawMessage `json:"workspacePaths"`
+		Seq                 json.RawMessage `json:"seq"`
+		Hook                string          `json:"hook"`
+		Event               json.RawMessage `json:"event"`
 	}
 	if err := json.Unmarshal(payload, &probe); err != nil {
 		return "", false
@@ -200,6 +215,10 @@ func detectFromShape(payload []byte) (Provider, bool) {
 	// Copilot is the only dialect keying the session on camelCase sessionId;
 	// its payloads carry no event-name field at all on most events, so this is
 	// the discriminator (verified against Copilot CLI 1.0.80).
+	// Antigravity is the only dialect keying the session on camelCase
+	// conversationId alongside a workspacePaths list.
+	case probe.ConversationIDCamel != "" && jsonPresent(probe.WorkspacePaths):
+		return ProviderAntigravity, true
 	case probe.SessionIDCamel != "":
 		return ProviderCopilotCLI, true
 	case probe.ConversationID != "":

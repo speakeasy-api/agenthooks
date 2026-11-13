@@ -31,9 +31,10 @@ type wireResponse struct {
 // quirk #11; Claude empty stdout is not a decision, quirk #17). Codex treats
 // empty stdout as "no opinion" and rejects unknown JSON (quirk #8). Kimi
 // appends exit-0 stdout to the model context, so its no-op must be empty
-// stdout (quirk #23).
+// stdout (quirk #23). Antigravity reads {} as a PreToolUse deny, so its no-op
+// is empty stdout too (quirk #52).
 func noOpResponse(p Provider) wireResponse {
-	if p == ProviderCodex || p == ProviderKimi {
+	if p == ProviderCodex || p == ProviderKimi || p == ProviderAntigravity {
 		return wireResponse{}
 	}
 	return wireResponse{Stdout: []byte("{}")}
@@ -58,6 +59,8 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 		return decodeOpenClawLine(v, conf, now, payload)
 	case ProviderKimi:
 		return decodeKimi(v, conf, now, payload)
+	case ProviderAntigravity:
+		return decodeAntigravity("", v, conf, now, payload)
 	case ProviderCopilotCLI:
 		return decodeCopilot(v, conf, now, payload)
 	case ProviderVSCodeCopilot:
@@ -105,6 +108,8 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		return wireResponse{Stdout: out}, nil
 	case ProviderKimi:
 		return encodeKimi(base, d)
+	case ProviderAntigravity:
+		return encodeAntigravity(base, d)
 	case ProviderCopilotCLI:
 		return encodeCopilot(base, d)
 	case ProviderVSCodeCopilot:

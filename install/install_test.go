@@ -634,3 +634,77 @@ func TestHookCommandQuotesSpacedBinary(t *testing.T) {
 		t.Errorf("spaced binary path unquoted or wrong dialect:\n got %s\nwant prefix %s", got, want)
 	}
 }
+
+func TestRenderAntigravityNamedHandler(t *testing.T) {
+	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderAntigravity, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]struct {
+		Enabled    bool `json:"enabled"`
+		PreToolUse []struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Timeout int    `json:"timeout"`
+			} `json:"hooks"`
+		} `json:"PreToolUse"`
+		Stop []struct {
+			Command string `json:"command"`
+		} `json:"Stop"`
+	}
+	if err := json.Unmarshal(readRendered(t, fsys, ".agents/hooks.json"), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	h, ok := cfg["myhooks"]
+	if !ok || !h.Enabled {
+		t.Fatalf("handler not keyed by identity name: %+v", cfg)
+	}
+	if len(h.PreToolUse) != 1 || h.PreToolUse[0].Matcher != "*" {
+		t.Fatalf("PreToolUse must match all tools and filter in-process: %+v", h.PreToolUse)
+	}
+	pre := h.PreToolUse[0].Hooks[0]
+	if pre.Type != "command" || pre.Timeout != 30 {
+		t.Errorf("antigravity timeout is seconds: %+v", pre)
+	}
+	for _, want := range []string{"--provider=antigravity", "--event=PreToolUse", "--filter="} {
+		if !strings.Contains(pre.Command, want) {
+			t.Errorf("command %q missing %s", pre.Command, want)
+		}
+	}
+	if len(h.Stop) != 1 || !strings.Contains(h.Stop[0].Command, "--event=Stop") {
+		t.Errorf("Stop must be a flat command list carrying --event: %+v", h.Stop)
+	}
+
+	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderAntigravity, Scope: ScopeUser, Dir: "/home/dev/.gemini/config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRendered(t, user, "hooks.json")
+}
+
+func TestInstallAntigravityKeepsForeignHandlers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	if err := os.WriteFile(path, []byte(`{"audit-log":{"Stop":[{"type":"command","command":"log.sh"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(t.Context(), testManifest(), Target{Provider: agenthooks.ProviderAntigravity, Scope: ScopeUser, Dir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg["audit-log"]; !ok {
+		t.Errorf("foreign handler dropped: %s", b)
+	}
+	if _, ok := cfg["myhooks"]; !ok {
+		t.Errorf("our handler missing: %s", b)
+	}
+}

@@ -330,6 +330,8 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	var typed any
 	if inv.mode == "notify" {
 		typed, err = decodeCodexNotify(variant, conf, r.now(), payload)
+	} else if provider == ProviderAntigravity {
+		typed, err = decodeAntigravity(inv.event, variant, conf, r.now(), payload)
 	} else {
 		typed, err = decodePayload(provider, variant, conf, r.now(), payload)
 	}

@@ -95,6 +95,8 @@ func Render(m Manifest, t Target) (fs.FS, error) {
 		return renderOpenClaw(m, t)
 	case agenthooks.ProviderKimi:
 		return renderKimi(m, t)
+	case agenthooks.ProviderAntigravity:
+		return renderAntigravity(m, t)
 	case agenthooks.ProviderCopilotCLI:
 		return renderCopilot(m, t)
 	case agenthooks.ProviderVSCodeCopilot:

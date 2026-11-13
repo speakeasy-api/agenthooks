@@ -127,7 +127,7 @@ func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
 		// server prefix. Colliding runtime-assigned numeric suffixes remain
 		// unresolved because their assignment depends on registration order.
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", vscodeSanitizeMCPName)
-	case ProviderCursor:
+	case ProviderCursor, ProviderAntigravity:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		if tc.MCP.Server != "" {
 			for i := range entries {
@@ -403,6 +403,15 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 				readMCPServersJSON(filepath.Join(home, ".gemini", "settings.json")),
 				readGeminiExtensions(filepath.Join(home, ".gemini", "extensions")))
 		}
+	case ProviderAntigravity:
+		// Antigravity's own mcp_config.json (quirk #53): remote servers use
+		// serverUrl. `agy mcp add` writes only the global file.
+		if cwd != "" {
+			groups = append(groups, readMCPServersJSON(filepath.Join(cwd, ".agents", "mcp_config.json")))
+		}
+		if home != "" {
+			groups = append(groups, readMCPServersJSON(filepath.Join(home, ".gemini", "config", "mcp_config.json")))
+		}
 	case ProviderKimi:
 		// Kimi Code keeps mcp.json under .kimi-code (project and user scope,
 		// user overridable via KIMI_CODE_HOME); ~/.kimi/mcp.json is the
@@ -476,6 +485,8 @@ type mcpServerJSON struct {
 	Args    []string `json:"args"`
 	URL     string   `json:"url"`
 	HTTPURL string   `json:"httpUrl"` // gemini's streamable-HTTP field
+	// ServerURL is Antigravity's remote-server field.
+	ServerURL string `json:"serverUrl"`
 }
 
 // readMCPServersJSON reads any config file whose MCP block is a top-level
@@ -567,6 +578,9 @@ func mcpEntriesFromJSON(servers map[string]mcpServerJSON) []mcpConfigEntry {
 		e := mcpConfigEntry{Name: n, URL: s.URL, Command: joinCommand(s.Command, s.Args)}
 		if e.URL == "" {
 			e.URL = s.HTTPURL
+		}
+		if e.URL == "" {
+			e.URL = s.ServerURL
 		}
 		if e.URL == "" && e.Command == "" {
 			continue

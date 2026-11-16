@@ -104,9 +104,9 @@ func TestAntigravityDecisions(t *testing.T) {
 		decision ToolPreDecision
 		want     string
 	}{
-		// {} denies on Antigravity, so no opinion must be empty stdout.
-		{"no-op", NoDecision(), ``},
-		{"allow", Allow(), `{"decision":"allow"}`},
+		// A missing decision denies; "allow" defers to the default policy.
+		{"no-op", NoDecision(), `{"decision":"allow"}`},
+		{"allow", Allow(), `{"decision":"auto_approve"}`},
 		{"deny", Deny("no shell"), `{"decision":"deny","reason":"no shell"}`},
 		{"ask", AskUser("confirm"), `{"decision":"ask","reason":"confirm"}`},
 	} {
@@ -123,8 +123,8 @@ func TestAntigravityDecisions(t *testing.T) {
 	}
 
 	got, _ := runAntigravity(t, r, "Stop", fixture(t, "antigravity/stop.json"))
-	if got != `{"decision":"continue","reason":"run the tests"}` {
-		t.Errorf("stop stdout = %q", got)
+	if got != "" {
+		t.Errorf("stop must not continue without a loop count, stdout = %q", got)
 	}
 }
 
@@ -164,6 +164,42 @@ func TestAntigravityMCPInventoryAndResolution(t *testing.T) {
 	runAntigravity(t, r, "PreToolUse", []byte(call))
 	if resolved == nil || resolved.URL != "https://mcp.linear.app/mcp" || !resolved.FromConfig {
 		t.Errorf("MCP server not resolved from mcp_config.json: %+v", resolved)
+	}
+}
+
+func TestAntigravityPreToolUsePassthroughPaths(t *testing.T) {
+	isolateHome(t)
+	r := quietRunner(WithDedupDir(t.TempDir()))
+	r.OnToolPre(func(context.Context, *ToolPreEvent) (ToolPreDecision, error) { return Deny("x"), nil })
+	run := func(args []string, payload string) string {
+		var stdout, stderr bytes.Buffer
+		base := []string{"agenthooks", "run", "--provider=antigravity", "--event=PreToolUse"}
+		r.Run(t.Context(), append(base, args...), strings.NewReader(payload), &stdout, &stderr)
+		return strings.TrimSpace(stdout.String())
+	}
+	if got := run(nil, "not json"); got != `{"decision":"allow"}` {
+		t.Errorf("decode failure must not deny, stdout = %q", got)
+	}
+	if got := run([]string{"--filter=canonical=file.write"}, string(fixture(t, "antigravity/pre_tool_use.json"))); got != `{"decision":"allow"}` {
+		t.Errorf("filtered-out call must not deny, stdout = %q", got)
+	}
+}
+
+func TestAntigravityUnidentifiedMCPStaysUnresolved(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".agents", "mcp_config.json"),
+		`{"mcpServers":{"linear":{"serverUrl":"https://mcp.linear.app/mcp"}}}`)
+	var resolved *MCPCall
+	r := mcpTestRunner(t)
+	r.OnToolPre(func(_ context.Context, ev *ToolPreEvent) (ToolPreDecision, error) {
+		resolved = ev.Tool.MCP
+		return NoDecision(), nil
+	})
+	call := fmt.Sprintf(`{"conversationId":"conv-1","workspacePaths":[%q],"toolCall":{"name":"call_mcp_tool","args":{"Other":"x"}}}`, cwd)
+	runAntigravity(t, r, "PreToolUse", []byte(call))
+	if resolved == nil || resolved.FromConfig || resolved.Server != "" {
+		t.Errorf("call without a server name was attributed: %+v", resolved)
 	}
 }
 

@@ -136,7 +136,7 @@ func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
 					break
 				}
 			}
-		} else if len(entries) == 1 {
+		} else if base.Provider == ProviderCursor && len(entries) == 1 {
 			// Older payloads carry no server identity; attribution is only
 			// sound when exactly one server is configured.
 			matched, server, tool = &entries[0], entries[0].Name, tc.MCP.Tool

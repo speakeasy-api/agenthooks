@@ -708,3 +708,32 @@ func TestInstallAntigravityKeepsForeignHandlers(t *testing.T) {
 		t.Errorf("our handler missing: %s", b)
 	}
 }
+
+func TestInstallAntigravityDropsRenamedHandler(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hooks.json")
+	old := `{"old-name":{"enabled":true,"Stop":[{"type":"command","command":"myhooks agenthooks run --provider=antigravity --event=Stop"}]},"audit-log":{"Stop":[{"type":"command","command":"log.sh"}]}}`
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(t.Context(), testManifest(), Target{Provider: agenthooks.ProviderAntigravity, Scope: ScopeUser, Dir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg["old-name"]; ok {
+		t.Errorf("stale agenthooks handler kept: %s", b)
+	}
+	if _, ok := cfg["audit-log"]; !ok {
+		t.Errorf("foreign handler dropped: %s", b)
+	}
+	if _, ok := cfg["myhooks"]; !ok {
+		t.Errorf("our handler missing: %s", b)
+	}
+}

@@ -338,7 +338,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	if err != nil {
 		r.logger.Error("agenthooks: decode failed; emitting no-op", "provider", provider, "error", err)
-		wire := noOpResponse(provider)
+		wire := passthroughResponse(provider, inv.event)
 		_, _ = stdout.Write(wire.Stdout)
 		return wire.ExitCode
 	}
@@ -380,7 +380,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	// express the manifest matcher (§7).
 	if hctx.Err() == nil && inv.filter != nil {
 		if tool := toolOf(typed); tool != nil && !inv.filter.Matches(*tool) {
-			wire := noOpResponse(provider)
+			wire := passthroughResponse(provider, base.NativeName)
 			_, _ = stdout.Write(wire.Stdout)
 			return wire.ExitCode
 		}
@@ -391,7 +391,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	if hctx.Err() == nil && provider == ProviderCursor && !r.dedupOff && (base.Kind == KindToolPre || base.Kind == KindToolPost) {
 		if r.seenDuplicate(typed) {
 			r.logger.Debug("agenthooks: suppressed duplicate cursor event", "native", base.NativeName)
-			wire := noOpResponse(provider)
+			wire := passthroughResponse(provider, base.NativeName)
 			_, _ = stdout.Write(wire.Stdout)
 			return wire.ExitCode
 		}
@@ -446,7 +446,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			core = failCore(pol, base)
 			wire, encErr = encodeDecision(typed, core)
 			if encErr != nil {
-				wire = noOpResponse(provider)
+				wire = passthroughResponse(provider, base.NativeName)
 			}
 		}
 	}

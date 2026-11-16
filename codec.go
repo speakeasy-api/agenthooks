@@ -40,6 +40,16 @@ func noOpResponse(p Provider) wireResponse {
 	return wireResponse{Stdout: []byte("{}")}
 }
 
+// passthroughResponse is the no-opinion answer for one event. Antigravity
+// PreToolUse requires a decision and treats empty output as deny, while
+// "allow" defers to the next hook or the default policy (quirk #52).
+func passthroughResponse(p Provider, native string) wireResponse {
+	if p == ProviderAntigravity && native == "PreToolUse" {
+		return wireResponse{Stdout: []byte(`{"decision":"allow"}`)}
+	}
+	return noOpResponse(p)
+}
+
 func joinContext(ss []string) string { return strings.Join(ss, "\n") }
 
 // decodePayload turns a provider payload into a typed event.

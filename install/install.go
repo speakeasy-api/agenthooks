@@ -289,7 +289,8 @@ func isMergeableTOML(path string) bool {
 // mergeManagedJSON overlays rendered config onto an existing settings file:
 // under "hooks", entries recognizably ours (command mentions "agenthooks")
 // are replaced by the rendered set while foreign entries survive; every other
-// rendered top-level key overwrites.
+// rendered top-level key overwrites. Antigravity handlers are top-level keys,
+// so ones we installed under an earlier name are dropped.
 func mergeManagedJSON(existing, rendered []byte) ([]byte, error) {
 	var ex, re map[string]json.RawMessage
 	if err := json.Unmarshal(existing, &ex); err != nil {
@@ -297,6 +298,11 @@ func mergeManagedJSON(existing, rendered []byte) ([]byte, error) {
 	}
 	if err := json.Unmarshal(rendered, &re); err != nil {
 		return nil, err
+	}
+	for k, v := range ex {
+		if _, ok := re[k]; !ok && k != "hooks" && strings.Contains(string(v), "agenthooks run --provider="+string(agenthooks.ProviderAntigravity)) {
+			delete(ex, k)
+		}
 	}
 	for k, v := range re {
 		if k != "hooks" {

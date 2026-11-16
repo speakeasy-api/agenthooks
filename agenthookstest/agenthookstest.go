@@ -107,9 +107,15 @@ func AssertNoOp(tb testing.TB, provider agenthooks.Provider, res Result) {
 	}
 	got := strings.TrimSpace(string(res.Stdout))
 	switch provider {
-	case agenthooks.ProviderCodex, agenthooks.ProviderKimi, agenthooks.ProviderAntigravity:
+	case agenthooks.ProviderAntigravity:
+		// PreToolUse needs an explicit decision ("allow" defers to the default
+		// policy); every other event's no-op is empty.
+		if got != "" && got != `{"decision":"allow"}` {
+			tb.Fatalf("%s no-op stdout = %q, want empty or {\"decision\":\"allow\"}", provider, got)
+		}
+	case agenthooks.ProviderCodex, agenthooks.ProviderKimi:
 		// Codex rejects unknown JSON; Kimi appends exit-0 stdout to the model
-		// context; Antigravity reads {} as a deny. All need a truly empty no-op.
+		// context. Both need a truly empty no-op.
 		if got != "" {
 			tb.Fatalf("%s no-op stdout = %q, want empty", provider, got)
 		}

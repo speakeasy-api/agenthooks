@@ -8,8 +8,9 @@ import (
 
 // Antigravity CLI (agy) dialect: camelCase input keyed on conversationId with
 // no event-name field (quirk #51), so generated configs pass --event=<native>.
-// PreToolUse decisions are a top-level "decision"; {} denies, so the no-op is
-// empty stdout (quirk #52). Every MCP call arrives as the call_mcp_tool step
+// PreToolUse decisions are a top-level "decision" and a missing one denies, so
+// the no-op is "allow", which defers to the default policy; consumer allows
+// map to "auto_approve" (quirk #52). Every MCP call arrives as the call_mcp_tool step
 // with the server and tool named in its args.
 
 const antigravityMCPTool = "call_mcp_tool"
@@ -147,7 +148,7 @@ func encodeAntigravity(base *Event, d decisionCore) (wireResponse, error) {
 	case KindToolPre:
 		switch d.kind {
 		case DecisionAllow:
-			out["decision"] = "allow"
+			out["decision"] = "auto_approve"
 		case DecisionDeny:
 			out["decision"] = "deny"
 		case DecisionAsk:
@@ -156,14 +157,9 @@ func encodeAntigravity(base *Event, d decisionCore) (wireResponse, error) {
 		if len(out) > 0 && d.reason != "" {
 			out["reason"] = d.reason
 		}
-	case KindStop:
-		if d.kind == DecisionContinue {
-			out["decision"] = "continue"
-			out["reason"] = d.instruction
-		}
 	}
 	if len(out) == 0 {
-		return noOpResponse(ProviderAntigravity), nil
+		return passthroughResponse(ProviderAntigravity, base.NativeName), nil
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

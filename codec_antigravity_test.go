@@ -230,7 +230,7 @@ func TestAntigravityToolIDIncludesStep(t *testing.T) {
 	if call(1) == call(2) {
 		t.Error("identical calls at different steps share a tool ID")
 	}
-	if call(3) != call(3) {
+	if first, second := call(3), call(3); first != second {
 		t.Error("tool ID is not stable for the same step")
 	}
 }

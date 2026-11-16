@@ -125,10 +125,13 @@ func antigravityToolCallOf(session SessionInfo, in *antigravityIn) ToolCall {
 		}
 	}
 	tc := makeToolCall(session, in.ToolCall.Name, "", input, in.ToolCall.Args)
+	// Hash the full args so MCP calls to different servers or tools stay
+	// distinct; repeated identical calls differ only by step.
+	turn := session.TurnID
 	if in.StepIdx != nil {
-		// Repeated identical calls in one conversation differ only by step.
-		tc.ID = SynthesizeToolID(session.ID, "step-"+strconv.Itoa(*in.StepIdx), in.ToolCall.Name, tc.Input)
+		turn = "step-" + strconv.Itoa(*in.StepIdx)
 	}
+	tc.ID = SynthesizeToolID(session.ID, turn, in.ToolCall.Name, normalizeInput(in.ToolCall.Args))
 	if !isMCP {
 		return tc
 	}

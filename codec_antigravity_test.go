@@ -234,3 +234,17 @@ func TestAntigravityToolIDIncludesStep(t *testing.T) {
 		t.Error("tool ID is not stable for the same step")
 	}
 }
+
+func TestAntigravityMCPToolIDIncludesServer(t *testing.T) {
+	id := func(server string) string {
+		p := fmt.Sprintf(`{"conversationId":"c","workspacePaths":["/w"],"toolCall":{"name":"call_mcp_tool","args":{"ServerName":%q,"ToolName":"t","Arguments":{"q":1}}}}`, server)
+		typed, err := decodeAntigravity("PreToolUse", VariantUnknown, DetectionConfig, testNow, []byte(p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return typed.(*ToolPreEvent).Tool.ID
+	}
+	if id("a") == id("b") {
+		t.Error("MCP calls to different servers share a tool ID")
+	}
+}

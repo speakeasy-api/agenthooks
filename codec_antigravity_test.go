@@ -125,9 +125,14 @@ func TestAntigravityDecisions(t *testing.T) {
 		})
 	}
 
-	got, _ := runAntigravity(t, r, "Stop", fixture(t, "antigravity/stop.json"))
+	got, _ := runAntigravity(t, r, "Stop", fixture(t, "antigravity/stop_v1_5_9.json"))
+	if got != `{"decision":"continue","reason":"run the tests"}` {
+		t.Errorf("first stop should continue, stdout = %q", got)
+	}
+	again := strings.Replace(string(fixture(t, "antigravity/stop_v1_5_9.json")), `"continuationActive":false`, `"continuationActive":true`, 1)
+	got, _ = runAntigravity(t, r, "Stop", []byte(again))
 	if got != "" {
-		t.Errorf("stop must not continue without a loop count, stdout = %q", got)
+		t.Errorf("a continued turn must not continue again, stdout = %q", got)
 	}
 }
 
@@ -246,5 +251,49 @@ func TestAntigravityMCPToolIDIncludesServer(t *testing.T) {
 	}
 	if id("a") == id("b") {
 		t.Error("MCP calls to different servers share a tool ID")
+	}
+}
+
+func TestDecodeAntigravityV159Payloads(t *testing.T) {
+	typed, err := decodeAntigravity("", VariantUnknown, DetectionConfig, testNow, fixture(t, "antigravity/pre_tool_use_mcp_v1_5_9.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, ok := typed.(*ToolPreEvent)
+	if !ok {
+		t.Fatalf("hookEventName must decode without --event, got %T", typed)
+	}
+	if pre.Tool.ID != "call_13916467241581022833" || pre.Tool.Synthesized {
+		t.Errorf("toolCall.id must be the tool ID: %+v", pre.Tool)
+	}
+	if pre.Session.CWD != "/home/dev/project" || pre.Tool.MCP == nil || pre.Tool.MCP.Server != "probeecho" {
+		t.Errorf("cwd or MCP call not decoded: %+v", pre)
+	}
+
+	typed, err = decodeAntigravity("", VariantUnknown, DetectionConfig, testNow, fixture(t, "antigravity/post_tool_use_mcp_v1_5_9.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post, ok := typed.(*ToolPostEvent)
+	if !ok || post.Tool.ID != pre.Tool.ID || post.Failed {
+		t.Errorf("post must pair with pre by ID and not fail: %+v", typed)
+	}
+
+	typed, err = decodeAntigravity("", VariantUnknown, DetectionConfig, testNow, fixture(t, "antigravity/pre_tool_use_read_v1_5_9.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read := typed.(*ToolPreEvent); read.Tool.Canonical != ToolFileRead {
+		t.Errorf("read_file canonical = %q", read.Tool.Canonical)
+	}
+
+	isolateHome(t)
+	r := quietRunner(WithDedupDir(t.TempDir()))
+	r.OnToolPre(func(context.Context, *ToolPreEvent) (ToolPreDecision, error) { return Deny("no reads"), nil })
+	var stdout, stderr bytes.Buffer
+	args := []string{"agenthooks", "run", "--provider=antigravity", "--filter=canonical=file.read"}
+	r.Run(t.Context(), args, bytes.NewReader(fixture(t, "antigravity/pre_tool_use_read_v1_5_9.json")), &stdout, &stderr)
+	if got := strings.TrimSpace(stdout.String()); got != `{"decision":"deny","reason":"no reads"}` {
+		t.Errorf("file.read filter must match read_file, stdout = %q", got)
 	}
 }

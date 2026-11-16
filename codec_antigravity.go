@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// Antigravity CLI (agy) dialect: camelCase input keyed on conversationId with
-// no event-name field (quirk #51), so generated configs pass --event=<native>.
-// PreToolUse decisions are a top-level "decision" and a missing one denies, so
-// the no-op is "allow", which defers to the default policy; consumer allows
-// map to "auto_approve" (quirk #52). Every MCP call arrives as the call_mcp_tool step
+// Antigravity CLI (agy) dialect: camelCase input keyed on conversationId.
+// hookEventName arrived in 1.5.9, so generated configs also pass
+// --event=<native> (quirk #51). PreToolUse decisions are a top-level
+// "decision"; {} denies, so the no-op is "allow", which defers to the default
+// policy; consumer allows map to "auto_approve" (quirk #52). Every MCP call arrives as the call_mcp_tool step
 // with the server and tool named in its args.
 
 const antigravityMCPTool = "call_mcp_tool"
@@ -26,17 +26,21 @@ var antigravityKinds = map[string]EventKind{
 }
 
 type antigravityIn struct {
-	ConversationID    string               `json:"conversationId"`
-	WorkspacePaths    []string             `json:"workspacePaths"`
-	TranscriptPath    string               `json:"transcriptPath"`
-	ModelName         string               `json:"modelName"`
-	StepIdx           *int                 `json:"stepIdx"`
-	ToolCall          *antigravityToolCall `json:"toolCall"`
-	Error             string               `json:"error"`
-	TerminationReason string               `json:"terminationReason"`
+	HookEventName      string               `json:"hookEventName"`
+	Cwd                string               `json:"cwd"`
+	ContinuationActive bool                 `json:"continuationActive"`
+	ConversationID     string               `json:"conversationId"`
+	WorkspacePaths     []string             `json:"workspacePaths"`
+	TranscriptPath     string               `json:"transcriptPath"`
+	ModelName          string               `json:"modelName"`
+	StepIdx            *int                 `json:"stepIdx"`
+	ToolCall           *antigravityToolCall `json:"toolCall"`
+	Error              string               `json:"error"`
+	TerminationReason  string               `json:"terminationReason"`
 }
 
 type antigravityToolCall struct {
+	ID   string          `json:"id"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args"`
 }
@@ -47,14 +51,17 @@ func decodeAntigravity(native string, v Variant, conf DetectionConfidence, now t
 		return nil, err
 	}
 	if native == "" {
+		native = in.HookEventName
+	}
+	if native == "" {
 		native = inferAntigravityEvent(&in)
 	}
 	kind, ok := antigravityKinds[native]
 	if !ok {
 		kind = KindOther
 	}
-	cwd := ""
-	if len(in.WorkspacePaths) > 0 {
+	cwd := in.Cwd
+	if cwd == "" && len(in.WorkspacePaths) > 0 {
 		cwd = in.WorkspacePaths[0]
 	}
 	base := Event{
@@ -93,7 +100,11 @@ func decodeAntigravity(native string, v Variant, conf DetectionConfidence, now t
 			Error:  in.Error,
 		}, nil
 	case KindStop:
-		return &StopEvent{Event: base}, nil
+		lc := 0
+		if in.ContinuationActive {
+			lc = 1
+		}
+		return &StopEvent{Event: base, PreviouslyContinued: in.ContinuationActive, LoopCount: lc}, nil
 	case KindSessionStart:
 		return &SessionStartEvent{Event: base}, nil
 	case KindModelRequest, KindModelResponse:
@@ -131,7 +142,12 @@ func antigravityToolCallOf(session SessionInfo, in *antigravityIn) ToolCall {
 	if in.StepIdx != nil {
 		turn = "step-" + strconv.Itoa(*in.StepIdx)
 	}
-	tc.ID = SynthesizeToolID(session.ID, turn, in.ToolCall.Name, normalizeInput(in.ToolCall.Args))
+	if in.ToolCall.ID != "" {
+		tc.ID = in.ToolCall.ID
+		tc.Synthesized = false
+	} else {
+		tc.ID = SynthesizeToolID(session.ID, turn, in.ToolCall.Name, normalizeInput(in.ToolCall.Args))
+	}
 	if !isMCP {
 		return tc
 	}
@@ -170,9 +186,17 @@ func firstStringField(raw json.RawMessage, keys ...string) string {
 	return ""
 }
 
-func encodeAntigravity(base *Event, d decisionCore) (wireResponse, error) {
+func encodeAntigravity(typed any, base *Event, d decisionCore) (wireResponse, error) {
 	out := map[string]any{}
-	if base.Kind == KindToolPre {
+	switch base.Kind {
+	case KindStop:
+		// agy has no native cap, so allow one continuation per stop chain:
+		// continuationActive marks a turn a Stop hook already continued.
+		if st, ok := typed.(*StopEvent); ok && d.kind == DecisionContinue && !st.PreviouslyContinued {
+			out["decision"] = "continue"
+			out["reason"] = d.instruction
+		}
+	case KindToolPre:
 		switch d.kind {
 		case DecisionAllow:
 			out["decision"] = "auto_approve"

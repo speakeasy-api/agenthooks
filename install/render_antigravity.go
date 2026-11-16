@@ -11,10 +11,12 @@ import (
 // others take a flat command list. Payloads carry no event name, so every
 // command passes --event=<native>.
 var kindToAntigravity = map[agenthooks.EventKind]string{
-	agenthooks.KindSessionStart: "SessionStart",
-	agenthooks.KindToolPre:      "PreToolUse",
-	agenthooks.KindToolPost:     "PostToolUse",
-	agenthooks.KindStop:         "Stop",
+	agenthooks.KindSessionStart:  "SessionStart",
+	agenthooks.KindToolPre:       "PreToolUse",
+	agenthooks.KindToolPost:      "PostToolUse",
+	agenthooks.KindStop:          "Stop",
+	agenthooks.KindModelRequest:  "PreInvocation",
+	agenthooks.KindModelResponse: "PostInvocation",
 }
 
 type antigravityHookCmd struct {

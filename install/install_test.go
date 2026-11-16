@@ -737,3 +737,18 @@ func TestInstallAntigravityDropsRenamedHandler(t *testing.T) {
 		t.Errorf("our handler missing: %s", b)
 	}
 }
+
+func TestRenderAntigravityModelEvents(t *testing.T) {
+	m := testManifest()
+	m.Hooks = append(m.Hooks, HookSpec{Kind: agenthooks.KindModelRequest}, HookSpec{Kind: agenthooks.KindModelResponse})
+	fsys, err := Render(m, Target{Provider: agenthooks.ProviderAntigravity, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(readRendered(t, fsys, ".agents/hooks.json"))
+	for _, want := range []string{"--event=PreInvocation", "--event=PostInvocation"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("model hooks missing %s: %s", want, out)
+		}
+	}
+}

@@ -46,6 +46,9 @@ func TestDecodeAntigravityMCPToolCall(t *testing.T) {
 	if ev.Tool.Canonical != ToolMCP || ev.Tool.MCP == nil || ev.Tool.MCP.Server != "linear" || ev.Tool.MCP.Tool != "list_issues" {
 		t.Errorf("MCP call not decoded: %+v", ev.Tool.MCP)
 	}
+	if string(ev.Tool.Input) != `{"query":"bug"}` {
+		t.Errorf("MCP input must be the call's Arguments, got %s", ev.Tool.Input)
+	}
 }
 
 func TestDecodeAntigravityPostToolUse(t *testing.T) {
@@ -212,5 +215,22 @@ func TestParseArgsProviderAliases(t *testing.T) {
 		if inv.provider != want || inv.event != "Stop" {
 			t.Errorf("--provider=%s parsed as %q event %q", flag, inv.provider, inv.event)
 		}
+	}
+}
+
+func TestAntigravityToolIDIncludesStep(t *testing.T) {
+	call := func(step int) string {
+		p := fmt.Sprintf(`{"conversationId":"c","workspacePaths":["/w"],"stepIdx":%d,"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}`, step)
+		typed, err := decodeAntigravity("PreToolUse", VariantUnknown, DetectionConfig, testNow, []byte(p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return typed.(*ToolPreEvent).Tool.ID
+	}
+	if call(1) == call(2) {
+		t.Error("identical calls at different steps share a tool ID")
+	}
+	if call(3) != call(3) {
+		t.Error("tool ID is not stable for the same step")
 	}
 }

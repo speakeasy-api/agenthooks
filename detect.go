@@ -212,13 +212,13 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		return ProviderOpenClaw, true
 	case probe.Hook != "" && jsonPresent(probe.Seq):
 		return ProviderOpenCode, true
-	// Copilot is the only dialect keying the session on camelCase sessionId;
-	// its payloads carry no event-name field at all on most events, so this is
-	// the discriminator (verified against Copilot CLI 1.0.80).
 	// Antigravity is the only dialect keying the session on camelCase
 	// conversationId alongside a workspacePaths list.
 	case probe.ConversationIDCamel != "" && jsonPresent(probe.WorkspacePaths):
 		return ProviderAntigravity, true
+	// Copilot is the only dialect keying the session on camelCase sessionId;
+	// its payloads carry no event-name field at all on most events, so this is
+	// the discriminator (verified against Copilot CLI 1.0.80).
 	case probe.SessionIDCamel != "":
 		return ProviderCopilotCLI, true
 	case probe.ConversationID != "":

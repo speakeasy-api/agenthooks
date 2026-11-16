@@ -2,6 +2,7 @@ package agenthooks
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -116,8 +117,19 @@ func inferAntigravityEvent(in *antigravityIn) string {
 }
 
 func antigravityToolCallOf(session SessionInfo, in *antigravityIn) ToolCall {
-	tc := makeToolCall(session, in.ToolCall.Name, "", in.ToolCall.Args, in.ToolCall.Args)
-	if in.ToolCall.Name != antigravityMCPTool {
+	input := in.ToolCall.Args
+	isMCP := in.ToolCall.Name == antigravityMCPTool
+	if isMCP {
+		if inner := firstRawField(in.ToolCall.Args, "Arguments", "arguments", "Args", "args"); inner != nil {
+			input = inner
+		}
+	}
+	tc := makeToolCall(session, in.ToolCall.Name, "", input, in.ToolCall.Args)
+	if in.StepIdx != nil {
+		// Repeated identical calls in one conversation differ only by step.
+		tc.ID = SynthesizeToolID(session.ID, "step-"+strconv.Itoa(*in.StepIdx), in.ToolCall.Name, tc.Input)
+	}
+	if !isMCP {
 		return tc
 	}
 	tc.Canonical = ToolMCP
@@ -126,6 +138,19 @@ func antigravityToolCallOf(session SessionInfo, in *antigravityIn) ToolCall {
 		Tool:   firstStringField(in.ToolCall.Args, "ToolName", "toolName", "tool_name", "Name", "name"),
 	}
 	return tc
+}
+
+func firstRawField(raw json.RawMessage, keys ...string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil
+	}
+	for _, k := range keys {
+		if v, ok := obj[k]; ok && jsonPresent(v) {
+			return v
+		}
+	}
+	return nil
 }
 
 func firstStringField(raw json.RawMessage, keys ...string) string {

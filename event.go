@@ -21,6 +21,9 @@ const (
 	ProviderOpenCode   Provider = "opencode"
 	ProviderOpenClaw   Provider = "openclaw"  // OpenClaw Gateway (typed plugin hooks via shim)
 	ProviderKimi       Provider = "kimi-code" // Kimi Code CLI ("kimi" accepted as a flag alias)
+	// Antigravity CLI (agy) succeeded Gemini CLI; its hooks dialect is unrelated
+	// to Gemini's, so it is a provider of its own.
+	ProviderAntigravity Provider = "antigravity"
 	// Copilot ships two dialects behind one product name, so a consumer
 	// switching on "is this Copilot?" must consider both constants.
 	ProviderCopilotCLI    Provider = "copilot-cli"    // GitHub Copilot CLI (camelCase dialect)
@@ -210,6 +213,8 @@ var canonicalNames = map[string]CanonicalTool{
 	"bash": ToolShell, "shell": ToolShell, "run_shell_command": ToolShell,
 	"run_terminal_cmd": ToolShell, "exec": ToolShell, "local_shell": ToolShell,
 	"terminal": ToolShell,
+	// Antigravity CLI native names (the matcher-visible step types).
+	"run_command": ToolShell, "write_to_file": ToolFileWrite,
 	// VS Code Copilot Chat, enumerated from the extension's wire-name table
 	// (not its package.json, which registers different names). Everything here
 	// executes an arbitrary command or arbitrary code, so a deny-shell policy

@@ -1,0 +1,1 @@
+{"conversationId":"5e4f131c-7a0b-4c5e-9d1a-2b3c4d5e6f70","workspacePaths":["/home/dev/project"],"transcriptPath":"/home/dev/.gemini/antigravity-cli/conversations/5e4f131c/transcript.jsonl","modelName":"gemini-3-pro","stepIdx":5,"toolCall":{"name":"call_mcp_tool","args":{"ServerName":"linear","ToolName":"list_issues","Arguments":{"query":"bug"}}}}

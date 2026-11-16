@@ -15,7 +15,7 @@
 
 <p align="center">
   <h1 align="center"><b>agenthooks</b></h1>
-  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
+  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, Antigravity CLI, GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
   <p align="center">
     <!-- Go Doc Badge -->
     <a href="https://pkg.go.dev/github.com/speakeasy-api/agenthooks"><img alt="Go Doc" src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
@@ -188,6 +188,7 @@ config, and an absent one already means match-all.
   the provider's own MCP config files (`.mcp.json`, `~/.claude.json`,
   `~/.codex/config.toml`, `.cursor/mcp.json`, `.gemini/settings.json` plus
   extension manifests, `.kimi-code/mcp.json`, `~/.kimi/mcp.json`,
+  `.agents/mcp_config.json`, `~/.gemini/config/mcp_config.json`,
   `opencode.json(c)`). OpenCode's
   shim uses the running server's resolved inventory, including custom, inline,
   remote, and managed configuration. Codex replays launch `-c` overrides and

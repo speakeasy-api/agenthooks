@@ -23,6 +23,7 @@ func TestRoundTripNoOpAndRawFidelity(t *testing.T) {
 		agenthooks.ProviderGemini,
 		agenthooks.ProviderOpenCode,
 		agenthooks.ProviderKimi,
+		agenthooks.ProviderAntigravity,
 		agenthooks.ProviderCopilotCLI,
 		agenthooks.ProviderVSCodeCopilot,
 	}

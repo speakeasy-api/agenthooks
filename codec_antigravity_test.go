@@ -3,9 +3,9 @@ package agenthooks
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -152,10 +152,12 @@ func TestAntigravityMCPInventoryAndResolution(t *testing.T) {
 	if _, code := runAntigravity(t, r, "SessionStart", []byte(start)); code != 0 {
 		t.Fatalf("exit code %d", code)
 	}
-	got, _ := json.Marshal(inventory)
-	want := `[{"Name":"local","URL":"","Command":"node server.js"},{"Name":"linear","URL":"https://mcp.linear.app/mcp","Command":""}]`
-	if string(got) != want {
-		t.Errorf("inventory = %s\nwant %s", got, want)
+	want := []MCPServer{
+		{Name: "local", Command: "node server.js"},
+		{Name: "linear", URL: "https://mcp.linear.app/mcp"},
+	}
+	if !reflect.DeepEqual(inventory, want) {
+		t.Errorf("inventory = %+v\nwant %+v", inventory, want)
 	}
 
 	call := fmt.Sprintf(`{"conversationId":"conv-1","workspacePaths":[%q],"toolCall":{"name":"call_mcp_tool","args":{"ServerName":"linear","ToolName":"list_issues"}}}`, cwd)

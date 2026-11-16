@@ -297,3 +297,22 @@ func TestDecodeAntigravityV159Payloads(t *testing.T) {
 		t.Errorf("file.read filter must match read_file, stdout = %q", got)
 	}
 }
+
+func TestAntigravityCWDPrefersCwdOverWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, want string
+	}{
+		{"cwd wins", `{"hookEventName":"SessionStart","conversationId":"c","cwd":"/w/sub","workspacePaths":["/w"]}`, "/w/sub"},
+		{"falls back to workspace", `{"hookEventName":"SessionStart","conversationId":"c","workspacePaths":["/w"]}`, "/w"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			typed, err := decodeAntigravity("", VariantUnknown, DetectionConfig, testNow, []byte(tc.payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := eventOf(typed).Session.CWD; got != tc.want {
+				t.Errorf("CWD = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

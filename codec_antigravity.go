@@ -144,8 +144,7 @@ func firstStringField(raw json.RawMessage, keys ...string) string {
 
 func encodeAntigravity(base *Event, d decisionCore) (wireResponse, error) {
 	out := map[string]any{}
-	switch base.Kind {
-	case KindToolPre:
+	if base.Kind == KindToolPre {
 		switch d.kind {
 		case DecisionAllow:
 			out["decision"] = "auto_approve"

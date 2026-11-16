@@ -126,13 +126,8 @@ func TestAntigravityDecisions(t *testing.T) {
 	}
 
 	got, _ := runAntigravity(t, r, "Stop", fixture(t, "antigravity/stop_v1_5_9.json"))
-	if got != `{"decision":"continue","reason":"run the tests"}` {
-		t.Errorf("first stop should continue, stdout = %q", got)
-	}
-	again := strings.Replace(string(fixture(t, "antigravity/stop_v1_5_9.json")), `"continuationActive":false`, `"continuationActive":true`, 1)
-	got, _ = runAntigravity(t, r, "Stop", []byte(again))
 	if got != "" {
-		t.Errorf("a continued turn must not continue again, stdout = %q", got)
+		t.Errorf("stop must not continue without a verified loop guard, stdout = %q", got)
 	}
 }
 

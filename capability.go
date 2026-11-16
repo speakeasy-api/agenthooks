@@ -72,8 +72,9 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindSessionStart:    caps(CapAddContext),
 	},
 	ProviderAntigravity: {
+		// No CapContinueAgent: Stop has no native loop cap and agy's
+		// continuationActive flag is unverified across a continue (quirk #54).
 		KindToolPre: caps(CapDeny, CapAsk, CapAllow),
-		KindStop:    caps(CapContinueAgent),
 	},
 	ProviderOpenCode: {
 		KindToolPre:         caps(CapDeny, CapUpdateInput),

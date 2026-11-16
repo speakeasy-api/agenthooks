@@ -250,6 +250,6 @@ var quirkRegistry = []Quirk{
 		Reference:  "antigravity MCP docs; verified against agy 1.5.9"},
 	{ID: 54, Provider: ProviderAntigravity, Versions: "all", Event: KindStop, Capability: CapContinueAgent,
 		Behavior:   "Stop accepts decision \"continue\" to re-enter the loop and has no native loop cap; it reports no loop count, only continuationActive (true while working on a continuation a Stop hook asked for)",
-		Mitigation: "continuationActive maps to PreviouslyContinued and LoopCount 1, and encodeAntigravity refuses a second continuation while it is set, so at most one ContinueWith per stop chain",
+		Mitigation: "continue-agent is not advertised, so ContinueWith degrades to Finish (or fails under Unsupported=Fail); continuationActive still maps to PreviouslyContinued and encodeAntigravity refuses to continue while it is set",
 		Reference:  "antigravity hooks docs"},
 }

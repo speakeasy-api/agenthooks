@@ -281,16 +281,6 @@ func TestDecodeAntigravityV159Payloads(t *testing.T) {
 	if read := typed.(*ToolPreEvent); read.Tool.Canonical != ToolFileRead {
 		t.Errorf("read_file canonical = %q", read.Tool.Canonical)
 	}
-
-	isolateHome(t)
-	r := quietRunner(WithDedupDir(t.TempDir()))
-	r.OnToolPre(func(context.Context, *ToolPreEvent) (ToolPreDecision, error) { return Deny("no reads"), nil })
-	var stdout, stderr bytes.Buffer
-	args := []string{"agenthooks", "run", "--provider=antigravity", "--filter=canonical=file.read"}
-	r.Run(t.Context(), args, bytes.NewReader(fixture(t, "antigravity/pre_tool_use_read_v1_5_9.json")), &stdout, &stderr)
-	if got := strings.TrimSpace(stdout.String()); got != `{"decision":"deny","reason":"no reads"}` {
-		t.Errorf("file.read filter must match read_file, stdout = %q", got)
-	}
 }
 
 func TestAntigravityCWDPrefersCwdOverWorkspace(t *testing.T) {

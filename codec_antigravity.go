@@ -186,17 +186,9 @@ func firstStringField(raw json.RawMessage, keys ...string) string {
 	return ""
 }
 
-func encodeAntigravity(typed any, base *Event, d decisionCore) (wireResponse, error) {
+func encodeAntigravity(base *Event, d decisionCore) (wireResponse, error) {
 	out := map[string]any{}
-	switch base.Kind {
-	case KindStop:
-		// agy has no native cap, so allow one continuation per stop chain:
-		// continuationActive marks a turn a Stop hook already continued.
-		if st, ok := typed.(*StopEvent); ok && d.kind == DecisionContinue && !st.PreviouslyContinued {
-			out["decision"] = "continue"
-			out["reason"] = d.instruction
-		}
-	case KindToolPre:
+	if base.Kind == KindToolPre {
 		switch d.kind {
 		case DecisionAllow:
 			out["decision"] = "auto_approve"

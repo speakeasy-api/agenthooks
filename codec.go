@@ -119,7 +119,7 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 	case ProviderKimi:
 		return encodeKimi(base, d)
 	case ProviderAntigravity:
-		return encodeAntigravity(typed, base, d)
+		return encodeAntigravity(base, d)
 	case ProviderCopilotCLI:
 		return encodeCopilot(base, d)
 	case ProviderVSCodeCopilot:

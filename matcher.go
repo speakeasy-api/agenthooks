@@ -125,7 +125,7 @@ func canonicalNativeNames(p Provider, c CanonicalTool) []string {
 		{ProviderGemini, ToolFetch}:     {"web_fetch", "google_web_search"},
 
 		{ProviderAntigravity, ToolShell}:     {"run_command"},
-		{ProviderAntigravity, ToolFileRead}:  {"view_file"},
+		{ProviderAntigravity, ToolFileRead}:  {"read_file", "view_file"},
 		{ProviderAntigravity, ToolFileWrite}: {"write_to_file"},
 
 		// Kimi native names are documented sparsely; only the ones the hooks
